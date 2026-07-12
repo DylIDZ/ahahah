@@ -145,35 +145,42 @@ end
 
 -- Teleport utility supporting vehicle teleportation if seated
 local function teleportTo(destinationCFrame)
-    local status, err = pcall(function()
-        local vehicle = getMyVehicle()
-        if vehicle then
-            print("[Teleport] Teleporting vehicle: " .. tostring(vehicle))
-            -- Stabilisasi fisika sebelum teleportasi untuk menghindari snapback/glitch
-            local root = vehicle.PrimaryPart or vehicle:FindFirstChildWhichIsA("BasePart", true)
-            if root then
-                local wasAnchored = root.Anchored
-                root.Anchored = true
+    local vehicle = getMyVehicle()
+    if vehicle then
+        print("[Teleport] Teleporting vehicle: " .. tostring(vehicle))
+        -- Stabilisasi fisika sebelum teleportasi untuk menghindari snapback/glitch
+        local root = vehicle.PrimaryPart or vehicle:FindFirstChildWhichIsA("BasePart", true)
+        if root then
+            local wasAnchored = root.Anchored
+            root.Anchored = true
+            local success, err = pcall(function()
                 vehicle:PivotTo(destinationCFrame)
+            end)
+            if not success then warn("[Teleport] Vehicle PivotTo failed: " .. tostring(err)) end
+            
+            -- Pindahkan wait ke luar pcall (di task.spawn) agar aman dari batas yield C-call boundary di executor tertentu
+            task.spawn(function()
                 task.wait(0.15)
                 root.Anchored = wasAnchored
-            else
-                vehicle:PivotTo(destinationCFrame)
-            end
-            return
-        end
-        
-        -- Standalone character teleport
-        local character = LocalPlayer.Character
-        if character then
-            print("[Teleport] Teleporting character")
-            character:PivotTo(destinationCFrame)
+            end)
         else
-            warn("[Teleport] Character not found!")
+            pcall(function()
+                vehicle:PivotTo(destinationCFrame)
+            end)
         end
-    end)
-    if not status then
-        warn("[Teleport] Error: " .. tostring(err))
+        return
+    end
+    
+    -- Standalone character teleport
+    local character = LocalPlayer.Character
+    if character then
+        print("[Teleport] Teleporting character")
+        local success, err = pcall(function()
+            character:PivotTo(destinationCFrame)
+        end)
+        if not success then warn("[Teleport] Character PivotTo failed: " .. tostring(err)) end
+    else
+        warn("[Teleport] Character not found!")
     end
 end
 
@@ -447,10 +454,9 @@ TeleportTab:Button({
     Title = 'TP base',
     Desc = 'Teleport ke base Anda (Truk ikut jika sedang dikendarai)',
     Callback = function()
-        -- Cari UnpackZone di plot kita dahulu (agar 100% teleport ke plot sendiri)
-        -- Jika tidak ketemu, cari secara rekursif di seluruh Workspace
-        local plot = getMyPlot()
-        local unpackZone = (plot and plot:FindFirstChild('UnpackZone', true)) or Workspace:FindFirstChild('UnpackZone', true)
+        -- Cari UnpackZone secara langsung di Workspace terlebih dahulu (sesuai f0ddd4e274cbe63a)
+        -- Jika tidak ada, coba cari secara rekursif
+        local unpackZone = Workspace:FindFirstChild('UnpackZone') or Workspace:FindFirstChild('UnpackZone', true)
         
         if unpackZone then
             teleportTo(unpackZone:GetPivot() + Vector3.new(0, 5, 0))
@@ -712,15 +718,21 @@ task.spawn(function()
                 registerConnection(UpdateCurrentWinningBid.OnClientEvent:Connect(function(currentBid, winningPlayer, storageUnit, timeLeft)
                     if not AutoBid then return end
                     
+                    local currentBidNum = tonumber(currentBid)
+                    if not currentBidNum then
+                        -- Jika nilai awal lelang nil (sebelum ada bid pertama dari player/NPC), abaikan secara diam-diam tanpa memicu warning console
+                        return
+                    end
+                    
                     -- Deteksi lelang unit baru
                     if storageUnit and storageUnit ~= currentAuctionUnit then
                         currentAuctionUnit = storageUnit
-                        if currentBid < MinBid then
+                        if currentBidNum < MinBid then
                             ignoredAuctionUnits[storageUnit] = true
-                            print("[Auction] Mengabaikan unit lelang " .. tostring(storageUnit) .. " karena harga awal (" .. tostring(currentBid) .. ") di bawah Min Bid (" .. tostring(MinBid) .. ")")
+                            print("[Auction] Mengabaikan unit lelang " .. tostring(storageUnit) .. " karena harga awal (" .. tostring(currentBidNum) .. ") di bawah Min Bid (" .. tostring(MinBid) .. ")")
                         else
                             ignoredAuctionUnits[storageUnit] = false
-                            print("[Auction] Mengikuti lelang untuk unit " .. tostring(storageUnit) .. " dengan harga awal " .. tostring(currentBid))
+                            print("[Auction] Mengikuti lelang untuk unit " .. tostring(storageUnit) .. " dengan harga awal " .. tostring(currentBidNum))
                         end
                     end
                     
@@ -740,7 +752,7 @@ task.spawn(function()
                     
                     if isWinning then return end
                     
-                    local nextBid = currentBid + 50
+                    local nextBid = currentBidNum + 50
                     if nextBid <= MaxBid then
                         if storageUnit then
                             safeCallRemote(BidEvent, storageUnit, nextBid)
