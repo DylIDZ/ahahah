@@ -712,8 +712,8 @@ task.spawn(function()
                     
                     -- Cari persentase otomatis (menangani format string "+24%" maupun number)
                     local function findPercentFromArgs(tbl)
-                        -- 1. Scan untuk string yang mengandung tanda %
-                        for i = 2, #tbl do
+                        -- 1. Scan untuk string yang mengandung tanda % (mulai dari index 5 untuk melewati nama/harga)
+                        for i = 5, #tbl do
                             local v = tbl[i]
                             if type(v) == "string" and v:find("%%") then
                                 local cleanStr = v:gsub("[^%d%.%-]", "")
@@ -721,8 +721,8 @@ task.spawn(function()
                                 if num then return num end
                             end
                         end
-                        -- 2. Scan untuk number murni
-                        for i = 2, #tbl do
+                        -- 2. Scan untuk number murni (mulai dari index 5 untuk melewati nama/harga)
+                        for i = 5, #tbl do
                             local v = tbl[i]
                             local num = tonumber(v)
                             if num and num >= -100 and num <= 100 then
