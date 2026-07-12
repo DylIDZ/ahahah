@@ -710,10 +710,10 @@ task.spawn(function()
                     local offerId = args[1]
                     if not offerId then return end
                     
-                    -- Cari persentase otomatis (menangani format string "+24%" maupun number)
+                    -- Cari persentase otomatis (menangani format string "+24%" maupun number secara bertahap)
                     local function findPercentFromArgs(tbl)
-                        -- 1. Scan untuk string yang mengandung tanda % (mulai dari index 5 untuk melewati nama/harga)
-                        for i = 5, #tbl do
+                        -- 1. Scan untuk string yang mengandung % di seluruh argumen (indeks 2 ke atas)
+                        for i = 2, #tbl do
                             local v = tbl[i]
                             if type(v) == "string" and v:find("%%") then
                                 local cleanStr = v:gsub("[^%d%.%-]", "")
@@ -721,14 +721,19 @@ task.spawn(function()
                                 if num then return num end
                             end
                         end
-                        -- 2. Scan untuk number murni (mulai dari index 5 untuk melewati nama/harga)
-                        for i = 5, #tbl do
+                        -- 2. Scan untuk nilai desimal/float (misal 0.3 untuk 30%) dari indeks 4 ke atas
+                        for i = 4, #tbl do
+                            local v = tbl[i]
+                            local num = tonumber(v)
+                            if num and num > 0 and num < 1 then
+                                return num * 100
+                            end
+                        end
+                        -- 3. Scan untuk number murni di range [-100, 100] dari indeks 4 ke atas
+                        for i = 4, #tbl do
                             local v = tbl[i]
                             local num = tonumber(v)
                             if num and num >= -100 and num <= 100 then
-                                if num > 0 and num < 1 then
-                                    num = num * 100
-                                end
                                 return num
                             end
                         end
