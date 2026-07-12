@@ -741,7 +741,7 @@ startAutoPlaceLoop = function()
 end
 
 -- =============================================================================
--- AUTO-COLLECT BACKGROUND THREAD
+-- AUTO-COLLECT BACKGROUND THREADa
 -- =============================================================================
 task.spawn(function()
     while true do
