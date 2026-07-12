@@ -209,11 +209,20 @@ end
 
 -- Find local player's plot
 local function getMyPlot()
+    -- Coba cari di _Plots
     local plots = Workspace:FindFirstChild("_Plots")
-    if not plots then return nil end
-    for _, plot in ipairs(plots:GetChildren()) do
-        if plot:GetAttribute('OwnerUserId') == LocalPlayer.UserId then
-            return plot
+    if plots then
+        for _, plot in ipairs(plots:GetChildren()) do
+            if plot:GetAttribute('OwnerUserId') == LocalPlayer.UserId then
+                return plot
+            end
+        end
+    end
+    
+    -- Coba cari langsung di Workspace (Plot direct child)
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if obj:GetAttribute('OwnerUserId') == LocalPlayer.UserId and not obj:FindFirstChildWhichIsA("VehicleSeat", true) then
+            return obj
         end
     end
     return nil
@@ -450,15 +459,52 @@ CollectTab:Toggle({
 -- -----------------------------------------------------------------------------
 TeleportTab:Section({ Title = "Base Teleport" })
 
+local function findUnpackZone()
+    print("[Teleport] Menjalankan pencarian UnpackZone...")
+    
+    -- 1. Cari langsung di Workspace (dengan/tanpa spasi)
+    local zone = Workspace:FindFirstChild("UnpackZone") or Workspace:FindFirstChild("Unpack Zone")
+    if zone then return zone end
+    
+    -- 2. Cari di dalam plot pemain
+    local plot = getMyPlot()
+    print("[Teleport] Plot terdeteksi: " .. (plot and plot:GetFullName() or "None"))
+    if plot then
+        zone = plot:FindFirstChild("UnpackZone") or plot:FindFirstChild("Unpack Zone") or plot:FindFirstChild("UnpackZone", true) or plot:FindFirstChild("Unpack Zone", true)
+        if zone then return zone end
+    end
+    
+    -- 3. Cari secara rekursif nama yang mengandung "unpack" dan "zone"
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        local name = desc.Name:lower()
+        if name:find("unpack") and name:find("zone") then
+            return desc
+        end
+    end
+    
+    -- 4. Cari secara rekursif nama yang mengandung "unpack"
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        if desc.Name:lower():find("unpack") then
+            return desc
+        end
+    end
+    
+    -- Debug: Cetak semua anak langsung dari Workspace untuk membantu pengguna melacak letak UnpackZone via F9 console
+    print("[Teleport] Debug: Mencetak semua anak langsung dari Workspace:")
+    for _, child in ipairs(Workspace:GetChildren()) do
+        print("  - " .. child.Name .. " (Class: " .. child.ClassName .. ")")
+    end
+    
+    return nil
+end
+
 TeleportTab:Button({
     Title = 'TP base',
     Desc = 'Teleport ke base Anda (Truk ikut jika sedang dikendarai)',
     Callback = function()
-        -- Cari UnpackZone secara langsung di Workspace terlebih dahulu (sesuai f0ddd4e274cbe63a)
-        -- Jika tidak ada, coba cari secara rekursif
-        local unpackZone = Workspace:FindFirstChild('UnpackZone') or Workspace:FindFirstChild('UnpackZone', true)
-        
+        local unpackZone = findUnpackZone()
         if unpackZone then
+            print("[Teleport] Base UnpackZone ditemukan: " .. unpackZone:GetFullName())
             teleportTo(unpackZone:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("UnpackZone not found!")
