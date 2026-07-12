@@ -910,33 +910,59 @@ startAutoPlaceLoop = function()
             end
             
             if inventory and type(inventory) == "table" then
+                -- Debug: Cetak isi inventori ke F9 console agar mempermudah pelacakan jika struktur data berbeda
+                pcall(function()
+                    print("[Auto Place] Menemukan " .. tostring(#inventory) .. " item di dalam inventori:")
+                    for k, v in pairs(inventory) do
+                        if type(v) == "table" then
+                            local itemStr = "Item Key: " .. tostring(k) .. " -> "
+                            for kk, vv in pairs(v) do
+                                itemStr = itemStr .. tostring(kk) .. "=" .. tostring(vv) .. ", "
+                            end
+                            print("  " .. itemStr)
+                        else
+                            print("  Key=" .. tostring(k) .. ", Value=" .. tostring(v))
+                        end
+                    end
+                end)
+
                 for itemId, itemData in pairs(inventory) do
                     if not AutoPlaceEnabled then break end
                     
                     local idToSend
                     if type(itemData) == "table" then
-                        idToSend = itemData.UID or itemData.uid or itemData.Id or itemData.id or itemId
+                        idToSend = itemData.UID or itemData.uid or itemData.UUID or itemData.uuid or itemData.Id or itemData.id or itemData.ItemId or itemData.itemId or itemId
                     else
                         idToSend = itemData
                     end
                     
-                    print("[Auto Place] Meletakkan barang: " .. tostring(idToSend) .. " ke Plot: " .. plot.Name)
-                    
-                    if PlaceStockItem then
-                        local placeStatus, placeErr = pcall(function()
-                            if PlaceStockItem:IsA("RemoteEvent") then
-                                PlaceStockItem:FireServer(plot, idToSend)
-                            elseif PlaceStockItem:IsA("RemoteFunction") then
-                                PlaceStockItem:InvokeServer(plot, idToSend)
+                    if idToSend then
+                        print("[Auto Place] Mencoba meletakkan barang: " .. tostring(idToSend) .. " ke Plot: " .. plot.Name)
+                        
+                        if PlaceStockItem then
+                            local placeStatus, placeErr = pcall(function()
+                                local defaultCFrame = plot:GetPivot() + Vector3.new(0, 3, 0)
+                                if PlaceStockItem:IsA("RemoteEvent") then
+                                    -- Coba berbagai variasi argumen secara aman (self-healing)
+                                    PlaceStockItem:FireServer(idToSend)
+                                    PlaceStockItem:FireServer(plot, idToSend)
+                                    PlaceStockItem:FireServer(idToSend, defaultCFrame)
+                                    PlaceStockItem:FireServer(plot, idToSend, defaultCFrame)
+                                elseif PlaceStockItem:IsA("RemoteFunction") then
+                                    PlaceStockItem:InvokeServer(idToSend)
+                                    PlaceStockItem:InvokeServer(plot, idToSend)
+                                    PlaceStockItem:InvokeServer(idToSend, defaultCFrame)
+                                    PlaceStockItem:InvokeServer(plot, idToSend, defaultCFrame)
+                                end
+                            end)
+                            if not placeStatus then
+                                warn("[Auto Place] Gagal mengirim perintah: " .. tostring(placeErr))
                             end
-                        end)
-                        if not placeStatus then
-                            warn("[Auto Place] Gagal meletakkan item: " .. tostring(placeErr))
+                        else
+                            warn("[Auto Place] Remote PlaceStockItem belum siap!")
                         end
-                    else
-                        warn("[Auto Place] Remote PlaceStockItem belum siap!")
+                        task.wait(0.5) -- Throttle anti-kick
                     end
-                    task.wait(0.5) -- Throttle anti-kick
                 end
             else
                 print("[Auto Place] Inventori kosong atau tidak terbaca.")
