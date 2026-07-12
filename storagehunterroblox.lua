@@ -958,7 +958,7 @@ task.spawn(function()
                         if actionText:find("collect") or actionText:find("pick up") or actionText:find("take") or objectText:find("item") then
                             local promptParent = desc.Parent
                             if promptParent and promptParent:IsA("BasePart") then
-                                -- Safe teleportation with anchoring
+                                -- Safe teleportation with anchorin
                                 local wasAnchored = rootPart.Anchored
                                 rootPart.Anchored = true
                                 rootPart.CFrame = promptParent.CFrame + Vector3.new(0, 3, 0)
