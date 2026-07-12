@@ -46,6 +46,12 @@ local AutoBid = false
 local MaxBid = 0
 local AutoCollect = false
 
+-- Variabel global remote game (akan diisi di background thread)
+local PlaceStockItem = nil
+local GetPlayerInventory = nil
+local TransferVehicleItemsToInventory = nil
+local BidEvent = nil
+
 -- List untuk melacak koneksi event aktif agar bisa di-disconnect saat re-execute
 local activeConnections = {}
 
@@ -74,32 +80,27 @@ getgenv().StorageHuntersScriptCleanUp = function()
     cleanupUI()
 end
 
--- Remote Events & Modules
-local Events = ReplicatedStorage:WaitForChild('Events')
-local NPCShopper = Events:WaitForChild('NPCShopper')
-local RespondOffer = NPCShopper:WaitForChild('RespondOffer')
-local ShowOffer = NPCShopper:WaitForChild('ShowOffer')
-
-local PlotEvents = Events:WaitForChild('Plot')
-local PlaceStockItem = PlotEvents:WaitForChild('PlaceStockItem')
-local GetPlayerInventory = Events:WaitForChild('Inventory'):WaitForChild('GetPlayerInventory')
-
-local VehicleEvents = Events:WaitForChild('Vehicles')
-local TransferVehicleItemsToInventory = VehicleEvents:WaitForChild('TransferVehicleItemsToInventory')
-
-local AuctionEvents = Events:WaitForChild('Auction')
-local BidEvent = AuctionEvents:WaitForChild('Bid')
-local UpdateCurrentWinningBid = AuctionEvents:WaitForChild('UpdateCurrentWinningBid')
-
--- Load Game Config Modules
-require(ReplicatedStorage.Modules.Items)
-require(ReplicatedStorage.Modules.MutatorModule)
-local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
-local Grading = GameConfig.Grading
-
 -- =============================================================================
 -- HELPER FUNCTIONS
 -- =============================================================================
+
+-- Safely call remote events or functions without causing execution halts
+local function safeCallRemote(remote, ...)
+    if not remote then return false, "Remote not found" end
+    local args = {...}
+    if remote:IsA("RemoteEvent") then
+        local status, err = pcall(function()
+            remote:FireServer(unpack(args))
+        end)
+        return status, err
+    elseif remote:IsA("RemoteFunction") then
+        local status, result = pcall(function()
+            return remote:InvokeServer(unpack(args))
+        end)
+        return status, result
+    end
+    return false, "Invalid remote type"
+end
 
 -- Safely get the local player's HumanoidRootPart
 local function getRootPart()
@@ -107,29 +108,43 @@ local function getRootPart()
     return character:WaitForChild('HumanoidRootPart')
 end
 
+-- Get the player's current vehicle (seated or owned in workspace)
+local function getMyVehicle()
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass('Humanoid')
+    
+    -- Prioritas 1: Kendaraan tempat pemain sedang duduk
+    if humanoid and humanoid.SeatPart and humanoid.SeatPart:IsA('VehicleSeat') then
+        return humanoid.SeatPart:FindFirstAncestorOfClass('Model')
+    end
+    
+    -- Prioritas 2: Cari di Workspace berdasarkan atribut OwnerUserId
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if obj:IsA("Model") and obj:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+            if obj:FindFirstChildWhichIsA("VehicleSeat", true) then
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
 -- Teleport utility supporting vehicle teleportation if seated
 local function teleportTo(destinationCFrame)
-    local character = LocalPlayer.Character
-    if not character then return end
-    
-    local humanoid = character:FindFirstChildOfClass('Humanoid')
-    local rootPart = character:FindFirstChild('HumanoidRootPart')
-    if not rootPart then return end
-    
-    -- If player is sitting in a vehicle, teleport the entire vehicle
-    if humanoid and humanoid.SeatPart and humanoid.SeatPart:IsA('VehicleSeat') then
-        local vehicle = humanoid.SeatPart:FindFirstAncestorOfClass('Model')
-        if vehicle then
-            local vehicleRoot = vehicle.PrimaryPart or vehicle:FindFirstChild('VehicleSeat') or vehicle:FindFirstChildWhichIsA('BasePart')
-            if vehicleRoot then
-                vehicleRoot.CFrame = destinationCFrame
-                return
-            end
+    local vehicle = getMyVehicle()
+    if vehicle then
+        local vehicleRoot = vehicle.PrimaryPart or vehicle:FindFirstChild('VehicleSeat') or vehicle:FindFirstChildWhichIsA('BasePart')
+        if vehicleRoot then
+            vehicleRoot.CFrame = destinationCFrame
+            return
         end
     end
     
     -- Standalone character teleport
-    rootPart.CFrame = destinationCFrame
+    local rootPart = getRootPart()
+    if rootPart then
+        rootPart.CFrame = destinationCFrame
+    end
 end
 
 -- Find a location in workspace by name
@@ -167,124 +182,31 @@ local function getMyPlot()
     return nil
 end
 
--- =============================================================================
--- AUTO-FEATURES LOGIC
--- =============================================================================
-
--- 1. Auto-Accept Offers
-registerConnection(ShowOffer.OnClientEvent:Connect(function(offerId, npcName, itemName, price, percent, ...)
-    if not AutoAcceptOffers then return end
-    
-    local offerPercent = tonumber(percent) or 0
-    if offerPercent >= MinAcceptPercent then
-        RespondOffer:FireServer(offerId, true) -- Accept
-    else
-        RespondOffer:FireServer(offerId, false) -- Decline
-    end
-end))
-
--- 2. Auto Place Items Loop
-local function startAutoPlaceLoop()
-    task.spawn(function()
-        while AutoPlaceEnabled do
-            local plot = getMyPlot()
-            if plot then
-                local success, inventory = pcall(function()
-                    return GetPlayerInventory:InvokeServer()
-                end)
-                
-                if success and type(inventory) == "table" then
-                    for itemId, itemData in pairs(inventory) do
-                        if not AutoPlaceEnabled then break end
-                        
-                        pcall(function()
-                            local idToSend = type(itemData) == "table" and (itemData.Id or itemData.id or itemId) or itemData
-                            PlaceStockItem:FireServer(idToSend)
-                        end)
-                        task.wait(0.5) -- Throttle to avoid rate limiting
-                    end
-                end
+-- Fallback to search player inventory in local folders if remote call fails
+local function getLocalInventory()
+    local invFolders = {
+        LocalPlayer:FindFirstChild("Inventory"),
+        LocalPlayer:FindFirstChild("Backpack"),
+        LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Inventory")
+    }
+    for _, folder in ipairs(invFolders) do
+        if folder then
+            local list = {}
+            for _, child in ipairs(folder:GetChildren()) do
+                list[child.Name] = { Id = child.Name, Name = child.Name, UID = child:GetAttribute("UID") or child.Name }
             end
-            task.wait(1)
+            return list
         end
-    end)
+    end
+    return nil
 end
-
--- 3. Auto-Bid
-registerConnection(UpdateCurrentWinningBid.OnClientEvent:Connect(function(currentBid, winningPlayer, storageUnit, timeLeft)
-    if not AutoBid then return end
-    
-    -- Check if we are already winning
-    local isWinning = false
-    if typeof(winningPlayer) == "Instance" and winningPlayer:IsA("Player") then
-        isWinning = (winningPlayer == LocalPlayer)
-    elseif type(winningPlayer) == "string" then
-        isWinning = (winningPlayer == LocalPlayer.Name)
-    elseif type(winningPlayer) == "number" then
-        isWinning = (winningPlayer == LocalPlayer.UserId)
-    end
-    
-    if isWinning then return end
-    
-    -- Calculate next bid (assuming standard Roblox increment of 50)
-    local nextBid = currentBid + 50
-    if nextBid <= MaxBid then
-        if storageUnit then
-            BidEvent:FireServer(storageUnit, nextBid)
-        else
-            BidEvent:FireServer(nextBid)
-        end
-    end
-end))
-
--- 4. Auto-Collect Proximity Prompts
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        if AutoCollect then
-            local character = LocalPlayer.Character
-            local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-            if rootPart then
-                for _, desc in ipairs(Workspace:GetDescendants()) do
-                    if not AutoCollect then break end
-                    if desc:IsA("ProximityPrompt") then
-                        local actionText = desc.ActionText:lower()
-                        local objectText = desc.ObjectText:lower()
-                        
-                        -- Target collectibles (pick up/collect items)
-                        if actionText:find("collect") or actionText:find("pick up") or actionText:find("take") or objectText:find("item") then
-                            local promptParent = desc.Parent
-                            if promptParent and promptParent:IsA("BasePart") then
-                                -- Safe teleportation with anchoring
-                                local wasAnchored = rootPart.Anchored
-                                rootPart.Anchored = true
-                                rootPart.CFrame = promptParent.CFrame + Vector3.new(0, 3, 0)
-                                task.wait(0.15)
-                                
-                                if fireproximityprompt then
-                                    fireproximityprompt(desc)
-                                else
-                                    desc:InputHoldBegin()
-                                    task.wait(desc.HoldDuration + 0.05)
-                                    desc:InputHoldEnd()
-                                end
-                                task.wait(0.15)
-                                rootPart.Anchored = wasAnchored
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
 
 -- =============================================================================
 -- USER INTERFACE INITIALIZATION (Astralux UI)
 -- =============================================================================
 local Library
 local success, err = pcall(function()
-    -- Coba muat secara online dari GitHub raw
+    -- Coba muat secara online dari GitHub raw Anda
     return loadstring(game:HttpGet("https://raw.githubusercontent.com/DylIDZ/ahahah/refs/heads/main/AstraluxLib.lua"))()
 end)
 
@@ -355,6 +277,9 @@ CollectTab:Textbox({
     end,
 })
 
+-- Forward declaration of loop function
+local startAutoPlaceLoop
+
 CollectTab:Toggle({
     Title = 'Auto Place Items',
     Desc = 'Otomatis meletakkan item dari inventori ke plot Anda',
@@ -373,7 +298,20 @@ CollectTab:Button({
     Title = 'Unload Truck',
     Desc = 'Pindahkan seluruh isi barang di kendaraan Anda ke inventori',
     Callback = function()
-        TransferVehicleItemsToInventory:FireServer()
+        print("[Unload Truck] Unloading started")
+        local vehicle = getMyVehicle()
+        print("[Unload Truck] Vehicle detected: " .. (vehicle and vehicle.Name or "None"))
+        
+        if TransferVehicleItemsToInventory then
+            local success, result = safeCallRemote(TransferVehicleItemsToInventory, vehicle)
+            if success then
+                print("[Unload Truck] Sukses mengirim perintah unload.")
+            else
+                warn("[Unload Truck] Gagal memicu unload: " .. tostring(result))
+            end
+        else
+            warn("[Unload Truck] Remote TransferVehicleItemsToInventory belum siap!")
+        end
     end,
 })
 
@@ -550,3 +488,203 @@ AuctionTab:Textbox({
         MaxBid = num or 0
     end,
 })
+
+-- =============================================================================
+-- BACKGROUND LOAD & CONNECTION SETUP (Non-Blocking Startup)
+-- =============================================================================
+task.spawn(function()
+    print("[Storage Hunters] Memulai inisialisasi background...")
+    
+    -- 1. Tunggu folder Events secara non-blocking
+    local Events = ReplicatedStorage:WaitForChild('Events', 10)
+    if not Events then
+        warn("[Storage Hunters] Folder Events tidak ditemukan di ReplicatedStorage!")
+        return
+    end
+    
+    -- 2. Memuat modul konfigurasi game
+    pcall(function()
+        require(ReplicatedStorage.Modules.Items)
+        require(ReplicatedStorage.Modules.MutatorModule)
+        local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+        local Grading = GameConfig.Grading
+    end)
+    
+    -- 3. Inisialisasi NPCShopper
+    local NPCShopper = Events:WaitForChild('NPCShopper', 5)
+    if NPCShopper then
+        local RespondOffer = NPCShopper:WaitForChild('RespondOffer', 5)
+        local ShowOffer = NPCShopper:WaitForChild('ShowOffer', 5)
+        
+        if ShowOffer and RespondOffer then
+            registerConnection(ShowOffer.OnClientEvent:Connect(function(offerId, npcName, itemName, price, percent, ...)
+                if not AutoAcceptOffers then return end
+                
+                local offerPercent = tonumber(percent) or 0
+                if offerPercent >= MinAcceptPercent then
+                    safeCallRemote(RespondOffer, offerId, true) -- Accept
+                else
+                    safeCallRemote(RespondOffer, offerId, false) -- Decline
+                end
+            end))
+            print("[Storage Hunters] Event NPCShopper berhasil di-hook!")
+        end
+    end
+    
+    -- 4. Resolusi Remote untuk Plot & Inventori
+    local PlotEvents = Events:WaitForChild('Plot', 5)
+    PlaceStockItem = PlotEvents and PlotEvents:WaitForChild('PlaceStockItem', 5)
+    
+    local InventoryEvents = Events:WaitForChild('Inventory', 5)
+    GetPlayerInventory = InventoryEvents and InventoryEvents:WaitForChild('GetPlayerInventory', 5)
+    
+    -- 5. Resolusi Remote untuk Kendaraan
+    local VehicleEvents = Events:WaitForChild('Vehicles', 5)
+    TransferVehicleItemsToInventory = VehicleEvents and VehicleEvents:WaitForChild('TransferVehicleItemsToInventory', 5)
+    
+    -- 6. Inisialisasi Lelang (Auction)
+    local AuctionEvents = Events:WaitForChild('Auction', 5)
+    if AuctionEvents then
+        BidEvent = AuctionEvents:WaitForChild('Bid', 5)
+        local UpdateCurrentWinningBid = AuctionEvents:WaitForChild('UpdateCurrentWinningBid', 5)
+        
+        if UpdateCurrentWinningBid and BidEvent then
+            registerConnection(UpdateCurrentWinningBid.OnClientEvent:Connect(function(currentBid, winningPlayer, storageUnit, timeLeft)
+                if not AutoBid then return end
+                
+                local isWinning = false
+                if typeof(winningPlayer) == "Instance" and winningPlayer:IsA("Player") then
+                    isWinning = (winningPlayer == LocalPlayer)
+                elseif type(winningPlayer) == "string" then
+                    isWinning = (winningPlayer == LocalPlayer.Name)
+                elseif type(winningPlayer) == "number" then
+                    isWinning = (winningPlayer == LocalPlayer.UserId)
+                end
+                
+                if isWinning then return end
+                
+                local nextBid = currentBid + 50
+                if nextBid <= MaxBid then
+                    if storageUnit then
+                        safeCallRemote(BidEvent, storageUnit, nextBid)
+                    else
+                        safeCallRemote(BidEvent, nextBid)
+                    end
+                end
+            end))
+            print("[Storage Hunters] Event Auction berhasil di-hook!")
+        end
+    end
+    
+    print("[Storage Hunters] Inisialisasi background selesai!")
+end)
+
+-- =============================================================================
+-- AUTO PLACE ITEMS FUNCTION BODY
+-- =============================================================================
+startAutoPlaceLoop = function()
+    task.spawn(function()
+        print("[Auto Place] Loop started")
+        while AutoPlaceEnabled do
+            local plot = getMyPlot()
+            if not plot then
+                warn("[Auto Place] Plot Anda tidak ditemukan di Workspace! Menunggu...")
+                task.wait(2)
+                continue
+            end
+            
+            -- Ambil data inventory (dari remote atau fallback lokal)
+            local success, inventory
+            if GetPlayerInventory then
+                success, inventory = pcall(function()
+                    if GetPlayerInventory:IsA("RemoteFunction") then
+                        return GetPlayerInventory:InvokeServer()
+                    end
+                end)
+            end
+            
+            if not success or type(inventory) ~= "table" then
+                inventory = getLocalInventory()
+            end
+            
+            if inventory and type(inventory) == "table" then
+                for itemId, itemData in pairs(inventory) do
+                    if not AutoPlaceEnabled then break end
+                    
+                    local idToSend
+                    if type(itemData) == "table" then
+                        idToSend = itemData.UID or itemData.uid or itemData.Id or itemData.id or itemId
+                    else
+                        idToSend = itemData
+                    end
+                    
+                    print("[Auto Place] Meletakkan barang: " .. tostring(idToSend) .. " ke Plot: " .. plot.Name)
+                    
+                    if PlaceStockItem then
+                        local placeStatus, placeErr = pcall(function()
+                            if PlaceStockItem:IsA("RemoteEvent") then
+                                PlaceStockItem:FireServer(plot, idToSend)
+                            elseif PlaceStockItem:IsA("RemoteFunction") then
+                                PlaceStockItem:InvokeServer(plot, idToSend)
+                            end
+                        end)
+                        if not placeStatus then
+                            warn("[Auto Place] Gagal meletakkan item: " .. tostring(placeErr))
+                        end
+                    else
+                        warn("[Auto Place] Remote PlaceStockItem belum siap!")
+                    end
+                    task.wait(0.5) -- Throttle anti-kick
+                end
+            else
+                print("[Auto Place] Inventori kosong atau tidak terbaca.")
+            end
+            task.wait(2)
+        end
+        print("[Auto Place] Loop stopped")
+    end)
+end
+
+-- =============================================================================
+-- AUTO-COLLECT BACKGROUND THREAD
+-- =============================================================================
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if AutoCollect then
+            local character = LocalPlayer.Character
+            local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+            if rootPart then
+                for _, desc in ipairs(Workspace:GetDescendants()) do
+                    if not AutoCollect then break end
+                    if desc:IsA("ProximityPrompt") then
+                        local actionText = desc.ActionText:lower()
+                        local objectText = desc.ObjectText:lower()
+                        
+                        -- Target collectibles (pick up/collect items)
+                        if actionText:find("collect") or actionText:find("pick up") or actionText:find("take") or objectText:find("item") then
+                            local promptParent = desc.Parent
+                            if promptParent and promptParent:IsA("BasePart") then
+                                -- Safe teleportation with anchoring
+                                local wasAnchored = rootPart.Anchored
+                                rootPart.Anchored = true
+                                rootPart.CFrame = promptParent.CFrame + Vector3.new(0, 3, 0)
+                                task.wait(0.15)
+                                
+                                if fireproximityprompt then
+                                    fireproximityprompt(desc)
+                                else
+                                    desc:InputHoldBegin()
+                                    task.wait(desc.HoldDuration + 0.05)
+                                    desc:InputHoldEnd()
+                                end
+                                task.wait(0.15)
+                                rootPart.Anchored = wasAnchored
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
