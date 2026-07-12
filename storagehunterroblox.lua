@@ -802,6 +802,7 @@ task.spawn(function()
         if AuctionEvents then
             BidEvent = AuctionEvents:WaitForChild('Bid')
             local UpdateCurrentWinningBid = AuctionEvents:WaitForChild('UpdateCurrentWinningBid')
+            local LeaveAuction = AuctionEvents:FindFirstChild('LeaveAuction') or AuctionEvents:WaitForChild('LeaveAuction')
             
             if UpdateCurrentWinningBid and BidEvent then
                 registerConnection(UpdateCurrentWinningBid.OnClientEvent:Connect(function(currentBid, winningPlayer, storageUnit, timeLeft)
@@ -819,6 +820,14 @@ task.spawn(function()
                         if currentBidNum < MinBid then
                             ignoredAuctionUnits[storageUnit] = true
                             print("[Auction] Mengabaikan unit lelang " .. tostring(storageUnit) .. " karena harga awal (" .. tostring(currentBidNum) .. ") di bawah Min Bid (" .. tostring(MinBid) .. ")")
+                            
+                            -- Panggil LeaveAuction secara non-blocking karena ini adalah RemoteFunction (InvokeServer)
+                            if LeaveAuction then
+                                print("[Auction] Harga awal terlalu rendah. Mengirim sinyal LeaveAuction...")
+                                task.spawn(function()
+                                    safeCallRemote(LeaveAuction)
+                                end)
+                            end
                         else
                             ignoredAuctionUnits[storageUnit] = false
                             print("[Auction] Mengikuti lelang untuk unit " .. tostring(storageUnit) .. " dengan harga awal " .. tostring(currentBidNum))
@@ -958,7 +967,7 @@ task.spawn(function()
                         if actionText:find("collect") or actionText:find("pick up") or actionText:find("take") or objectText:find("item") then
                             local promptParent = desc.Parent
                             if promptParent and promptParent:IsA("BasePart") then
-                                -- Safe teleportation with anchorin
+                                -- Safe teleportation with anchoring
                                 local wasAnchored = rootPart.Anchored
                                 rootPart.Anchored = true
                                 rootPart.CFrame = promptParent.CFrame + Vector3.new(0, 3, 0)
