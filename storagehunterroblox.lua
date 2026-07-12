@@ -500,14 +500,14 @@ end
 
 TeleportTab:Button({
     Title = 'TP base',
-    Desc = 'Teleport ke base Anda (Truk ikut jika sedang dikendarai)',
+    Desc = 'Teleport ke base (Harus ada minimal 1 barang di mobil agar Unpack Zone muncul)',
     Callback = function()
         local unpackZone = findUnpackZone()
         if unpackZone then
             print("[Teleport] Base UnpackZone ditemukan: " .. unpackZone:GetFullName())
             teleportTo(unpackZone:GetPivot() + Vector3.new(0, 5, 0))
         else
-            warn("UnpackZone not found!")
+            warn("UnpackZone not found! Pastikan ada minimal 1 barang di dalam mobil.")
         end
     end,
 })
@@ -515,6 +515,11 @@ TeleportTab:Button({
 TeleportTab:Label({
     Title = 'Tips Truk',
     Desc = 'Jika duduk di kursi Truk, truk tersebut akan ikut berteleportasi'
+})
+
+TeleportTab:Label({
+    Title = 'Penting!',
+    Desc = 'Harus ada minimal 1 barang di bagasi mobil agar Unpack Zone muncul di base Anda!'
 })
 
 TeleportTab:Section({ Title = 'Zones' })
@@ -705,11 +710,32 @@ task.spawn(function()
                     local offerId = args[1]
                     if not offerId then return end
                     
-                    -- Cari persentase otomatis
-                    local percent = tonumber(args[5]) or tonumber(args[6]) or tonumber(args[7]) or 0
-                    if percent > 0 and percent < 1 then
-                        percent = percent * 100
+                    -- Cari persentase otomatis (menangani format string "+24%" maupun number)
+                    local function findPercentFromArgs(tbl)
+                        -- 1. Scan untuk string yang mengandung tanda %
+                        for i = 2, #tbl do
+                            local v = tbl[i]
+                            if type(v) == "string" and v:find("%%") then
+                                local cleanStr = v:gsub("[^%d%.%-]", "")
+                                local num = tonumber(cleanStr)
+                                if num then return num end
+                            end
+                        end
+                        -- 2. Scan untuk number murni
+                        for i = 2, #tbl do
+                            local v = tbl[i]
+                            local num = tonumber(v)
+                            if num and num >= -100 and num <= 100 then
+                                if num > 0 and num < 1 then
+                                    num = num * 100
+                                end
+                                return num
+                            end
+                        end
+                        return 0
                     end
+                    
+                    local percent = findPercentFromArgs(args)
                     
                     print("[NPCShopper] Parsed percent: " .. tostring(percent) .. "%, MinAccept: " .. tostring(MinAcceptPercent) .. "%")
                     
