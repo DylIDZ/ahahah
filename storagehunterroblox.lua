@@ -108,17 +108,32 @@ local function safeCallRemote(remote, ...)
 end
 
 -- Get the player's current vehicle (seated or owned in workspace)
+-- Find the highest Model ancestor below Workspace
+local function getTopLevelModel(instance)
+    if not instance then return nil end
+    local current = instance
+    local lastModel = nil
+    while current and current ~= Workspace do
+        if current:IsA("Model") then
+            lastModel = current
+        end
+        current = current.Parent
+    end
+    return lastModel
+end
+
+-- Get the player's current vehicle (seated or owned in workspace)
 local function getMyVehicle()
     local character = LocalPlayer.Character
     local humanoid = character and character:FindFirstChildOfClass('Humanoid')
     
     -- Prioritas 1: Kendaraan tempat pemain sedang duduk
     if humanoid and humanoid.SeatPart and humanoid.SeatPart:IsA('VehicleSeat') then
-        return humanoid.SeatPart:FindFirstAncestorOfClass('Model')
+        return getTopLevelModel(humanoid.SeatPart)
     end
     
-    -- Prioritas 2: Cari di Workspace berdasarkan atribut OwnerUserId
-    for _, obj in ipairs(Workspace:GetChildren()) do
+    -- Prioritas 2: Cari di Workspace secara mendalam berdasarkan atribut OwnerUserId
+    for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
             if obj:FindFirstChildWhichIsA("VehicleSeat", true) then
                 return obj
@@ -314,9 +329,18 @@ CollectTab:Button({
         print("[Unload Truck] Vehicle detected: " .. (vehicle and vehicle.Name or "None"))
         
         if TransferVehicleItemsToInventory then
+            -- Cobalah mengirim vehicle model tingkat tertinggi
             local success, result = safeCallRemote(TransferVehicleItemsToInventory, vehicle)
+            
+            -- Jika pengiriman model gagal atau tidak merespon, coba kirim tanpa argumen
+            -- karena server mendeteksi otomatis dari seat player
+            if not success or result == nil then
+                print("[Unload Truck] Gagal dengan model, mencoba tanpa argumen...")
+                success, result = safeCallRemote(TransferVehicleItemsToInventory)
+            end
+            
             if success then
-                print("[Unload Truck] Sukses mengirim perintah unload.")
+                print("[Unload Truck] Sukses mengirim perintah unload. Hasil: " .. tostring(result))
             else
                 warn("[Unload Truck] Gagal memicu unload: " .. tostring(result))
             end
@@ -741,7 +765,7 @@ startAutoPlaceLoop = function()
 end
 
 -- =============================================================================
--- AUTO-COLLECT BACKGROUND THREADa
+-- AUTO-COLLECT BACKGROUND THREAD
 -- =============================================================================
 task.spawn(function()
     while true do
