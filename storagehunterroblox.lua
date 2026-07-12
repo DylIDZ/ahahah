@@ -46,7 +46,7 @@ local AutoBid = false
 local MaxBid = 0
 local AutoCollect = false
 
--- Variabel global remote game (akan diisi di background thread)
+-- Variabel global remote game (akan diisi secara independen di background)
 local PlaceStockItem = nil
 local GetPlayerInventory = nil
 local TransferVehicleItemsToInventory = nil
@@ -185,8 +185,9 @@ end
 -- Fallback to search player inventory in local folders if remote call fails
 local function getLocalInventory()
     local invFolders = {
-        LocalPlayer:FindFirstChild("Inventory"),
+        LocalPlayer.Character,
         LocalPlayer:FindFirstChild("Backpack"),
+        LocalPlayer:FindFirstChild("Inventory"),
         LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Inventory")
     }
     for _, folder in ipairs(invFolders) do
@@ -226,6 +227,8 @@ if not Library then
     error("Gagal memuat Astralux UI Library!")
 end
 
+print("[Storage Hunters] Library terisi: " .. tostring(Library))
+
 -- Create Main Window
 local Window = Library:Window({
     Title = "Storage Hunters by Astralux",
@@ -258,6 +261,7 @@ CollectTab:Toggle({
     Value = false,
     Callback = function(state)
         AutoAcceptOffers = state
+        print("[Settings] AutoAcceptOffers set to: " .. tostring(state))
     end,
 })
 
@@ -271,6 +275,7 @@ CollectTab:Textbox({
         local num = tonumber(value)
         if num then
             MinAcceptPercent = num
+            print("[Settings] MinAcceptPercent set to: " .. tostring(num))
         else
             warn('Min Accept %: invalid number entered')
         end
@@ -286,6 +291,7 @@ CollectTab:Toggle({
     Value = false,
     Callback = function(state)
         AutoPlaceEnabled = state
+        print("[Settings] AutoPlaceEnabled set to: " .. tostring(state))
         if state then
             startAutoPlaceLoop()
         end
@@ -328,6 +334,7 @@ CollectTab:Toggle({
     Value = false,
     Callback = function(state)
         AutoCollect = state
+        print("[Settings] AutoCollect set to: " .. tostring(state))
     end,
 })
 
@@ -474,6 +481,7 @@ AuctionTab:Toggle({
     Value = false,
     Callback = function(state)
         AutoBid = state
+        print("[Settings] AutoBid set to: " .. tostring(state))
     end,
 })
 
@@ -486,97 +494,135 @@ AuctionTab:Textbox({
     Callback = function(value)
         local num = tonumber(value)
         MaxBid = num or 0
+        print("[Settings] MaxBid set to: " .. tostring(MaxBid))
     end,
 })
 
 -- =============================================================================
--- BACKGROUND LOAD & CONNECTION SETUP (Non-Blocking Startup)
+-- BACKGROUND LOAD & CONNECTION SETUP (Non-Blocking & Independent Threads)
 -- =============================================================================
 task.spawn(function()
     print("[Storage Hunters] Memulai inisialisasi background...")
     
-    -- 1. Tunggu folder Events secara non-blocking
-    local Events = ReplicatedStorage:WaitForChild('Events', 10)
-    if not Events then
-        warn("[Storage Hunters] Folder Events tidak ditemukan di ReplicatedStorage!")
-        return
-    end
+    -- Tunggu folder Events secara non-blocking
+    local Events = ReplicatedStorage:WaitForChild('Events')
+    print("[Storage Hunters] Folder Events berhasil terdeteksi!")
     
-    -- 2. Memuat modul konfigurasi game
-    pcall(function()
-        require(ReplicatedStorage.Modules.Items)
-        require(ReplicatedStorage.Modules.MutatorModule)
-        local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
-        local Grading = GameConfig.Grading
+    -- 1. Memuat modul konfigurasi game
+    task.spawn(function()
+        pcall(function()
+            require(ReplicatedStorage.Modules.Items)
+            require(ReplicatedStorage.Modules.MutatorModule)
+            local GameConfig = require(ReplicatedStorage.Modules.GameConfig)
+            local Grading = GameConfig.Grading
+            print("[Storage Hunters] Modul game berhasil di-require.")
+        end)
     end)
     
-    -- 3. Inisialisasi NPCShopper
-    local NPCShopper = Events:WaitForChild('NPCShopper', 5)
-    if NPCShopper then
-        local RespondOffer = NPCShopper:WaitForChild('RespondOffer', 5)
-        local ShowOffer = NPCShopper:WaitForChild('ShowOffer', 5)
-        
-        if ShowOffer and RespondOffer then
-            registerConnection(ShowOffer.OnClientEvent:Connect(function(offerId, npcName, itemName, price, percent, ...)
-                if not AutoAcceptOffers then return end
-                
-                local offerPercent = tonumber(percent) or 0
-                if offerPercent >= MinAcceptPercent then
-                    safeCallRemote(RespondOffer, offerId, true) -- Accept
-                else
-                    safeCallRemote(RespondOffer, offerId, false) -- Decline
-                end
-            end))
-            print("[Storage Hunters] Event NPCShopper berhasil di-hook!")
-        end
-    end
-    
-    -- 4. Resolusi Remote untuk Plot & Inventori
-    local PlotEvents = Events:WaitForChild('Plot', 5)
-    PlaceStockItem = PlotEvents and PlotEvents:WaitForChild('PlaceStockItem', 5)
-    
-    local InventoryEvents = Events:WaitForChild('Inventory', 5)
-    GetPlayerInventory = InventoryEvents and InventoryEvents:WaitForChild('GetPlayerInventory', 5)
-    
-    -- 5. Resolusi Remote untuk Kendaraan
-    local VehicleEvents = Events:WaitForChild('Vehicles', 5)
-    TransferVehicleItemsToInventory = VehicleEvents and VehicleEvents:WaitForChild('TransferVehicleItemsToInventory', 5)
-    
-    -- 6. Inisialisasi Lelang (Auction)
-    local AuctionEvents = Events:WaitForChild('Auction', 5)
-    if AuctionEvents then
-        BidEvent = AuctionEvents:WaitForChild('Bid', 5)
-        local UpdateCurrentWinningBid = AuctionEvents:WaitForChild('UpdateCurrentWinningBid', 5)
-        
-        if UpdateCurrentWinningBid and BidEvent then
-            registerConnection(UpdateCurrentWinningBid.OnClientEvent:Connect(function(currentBid, winningPlayer, storageUnit, timeLeft)
-                if not AutoBid then return end
-                
-                local isWinning = false
-                if typeof(winningPlayer) == "Instance" and winningPlayer:IsA("Player") then
-                    isWinning = (winningPlayer == LocalPlayer)
-                elseif type(winningPlayer) == "string" then
-                    isWinning = (winningPlayer == LocalPlayer.Name)
-                elseif type(winningPlayer) == "number" then
-                    isWinning = (winningPlayer == LocalPlayer.UserId)
-                end
-                
-                if isWinning then return end
-                
-                local nextBid = currentBid + 50
-                if nextBid <= MaxBid then
-                    if storageUnit then
-                        safeCallRemote(BidEvent, storageUnit, nextBid)
-                    else
-                        safeCallRemote(BidEvent, nextBid)
+    -- 2. Inisialisasi NPCShopper (Auto-Accept Offers)
+    task.spawn(function()
+        local NPCShopper = Events:WaitForChild('NPCShopper')
+        if NPCShopper then
+            local RespondOffer = NPCShopper:WaitForChild('RespondOffer')
+            local ShowOffer = NPCShopper:WaitForChild('ShowOffer')
+            
+            if ShowOffer and RespondOffer then
+                registerConnection(ShowOffer.OnClientEvent:Connect(function(...)
+                    local args = {...}
+                    print("[NPCShopper] ShowOffer fired. Arguments:")
+                    for i, v in ipairs(args) do
+                        print("  Arg " .. tostring(i) .. ": " .. tostring(v) .. " (" .. typeof(v) .. ")")
                     end
-                end
-            end))
-            print("[Storage Hunters] Event Auction berhasil di-hook!")
+                    
+                    if not AutoAcceptOffers then return end
+                    local offerId = args[1]
+                    if not offerId then return end
+                    
+                    -- Cari persentase otomatis
+                    local percent = tonumber(args[5]) or tonumber(args[6]) or tonumber(args[7]) or 0
+                    if percent > 0 and percent < 1 then
+                        percent = percent * 100
+                    end
+                    
+                    print("[NPCShopper] Parsed percent: " .. tostring(percent) .. "%, MinAccept: " .. tostring(MinAcceptPercent) .. "%")
+                    
+                    if percent >= MinAcceptPercent then
+                        print("[NPCShopper] Auto-Accepting offer: " .. tostring(offerId))
+                        safeCallRemote(RespondOffer, offerId, true) -- Accept
+                    else
+                        print("[NPCShopper] Auto-Declining offer: " .. tostring(offerId))
+                        safeCallRemote(RespondOffer, offerId, false) -- Decline
+                    end
+                end))
+                print("[Storage Hunters] Event NPCShopper berhasil di-hook!")
+            end
         end
-    end
+    end)
     
-    print("[Storage Hunters] Inisialisasi background selesai!")
+    -- 3. Resolusi Remote untuk Plot (PlaceStockItem)
+    task.spawn(function()
+        local PlotEvents = Events:WaitForChild('Plot')
+        if PlotEvents then
+            PlaceStockItem = PlotEvents:WaitForChild('PlaceStockItem')
+            print("[Storage Hunters] Remote PlaceStockItem berhasil dideteksi!")
+        end
+    end)
+    
+    -- 4. Resolusi Remote untuk Inventori (GetPlayerInventory)
+    task.spawn(function()
+        local InventoryEvents = Events:WaitForChild('Inventory')
+        if InventoryEvents then
+            GetPlayerInventory = InventoryEvents:WaitForChild('GetPlayerInventory')
+            print("[Storage Hunters] Remote GetPlayerInventory berhasil dideteksi!")
+        end
+    end)
+    
+    -- 5. Resolusi Remote untuk Kendaraan (TransferVehicleItemsToInventory)
+    task.spawn(function()
+        local VehicleEvents = Events:WaitForChild('Vehicles')
+        if VehicleEvents then
+            TransferVehicleItemsToInventory = VehicleEvents:WaitForChild('TransferVehicleItemsToInventory')
+            print("[Storage Hunters] Remote TransferVehicleItemsToInventory berhasil dideteksi!")
+        end
+    end)
+    
+    -- 6. Inisialisasi Lelang (Auto-Bid)
+    task.spawn(function()
+        local AuctionEvents = Events:WaitForChild('Auction')
+        if AuctionEvents then
+            BidEvent = AuctionEvents:WaitForChild('Bid')
+            local UpdateCurrentWinningBid = AuctionEvents:WaitForChild('UpdateCurrentWinningBid')
+            
+            if UpdateCurrentWinningBid and BidEvent then
+                registerConnection(UpdateCurrentWinningBid.OnClientEvent:Connect(function(currentBid, winningPlayer, storageUnit, timeLeft)
+                    if not AutoBid then return end
+                    
+                    local isWinning = false
+                    if typeof(winningPlayer) == "Instance" and winningPlayer:IsA("Player") then
+                        isWinning = (winningPlayer == LocalPlayer)
+                    elseif type(winningPlayer) == "string" then
+                        isWinning = (winningPlayer == LocalPlayer.Name)
+                    elseif type(winningPlayer) == "number" then
+                        isWinning = (winningPlayer == LocalPlayer.UserId)
+                    end
+                    
+                    if isWinning then return end
+                    
+                    local nextBid = currentBid + 50
+                    if nextBid <= MaxBid then
+                        if storageUnit then
+                            safeCallRemote(BidEvent, storageUnit, nextBid)
+                        else
+                            safeCallRemote(BidEvent, nextBid)
+                        end
+                    end
+                end))
+                print("[Storage Hunters] Event Auction berhasil di-hook!")
+            end
+        end
+    end)
+    
+    print("[Storage Hunters] Inisialisasi thread background selesai!")
 end)
 
 -- =============================================================================
@@ -601,6 +647,20 @@ startAutoPlaceLoop = function()
                         return GetPlayerInventory:InvokeServer()
                     end
                 end)
+            end
+            
+            print("[Auto Place] GetPlayerInventory success: " .. tostring(success) .. ", type: " .. type(inventory))
+            if success and type(inventory) == "table" then
+                -- Print sample structure of first item for F9 debug logs
+                for k, v in pairs(inventory) do
+                    print("[Auto Place] Inventory Item Sample: Key=" .. tostring(k) .. ", Value type=" .. type(v))
+                    if type(v) == "table" then
+                        for kk, vv in pairs(v) do
+                            print("  " .. tostring(kk) .. " = " .. tostring(vv))
+                        end
+                    end
+                    break
+                end
             end
             
             if not success or type(inventory) ~= "table" then
