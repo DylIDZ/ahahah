@@ -133,8 +133,17 @@ local function getMyVehicle()
     end
     
     -- Prioritas 2: Cari di Workspace secara mendalam berdasarkan atribut OwnerUserId
+    local plotsFolder = Workspace:FindFirstChild("_Plots")
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
+            -- Mencegah plot terdeteksi sebagai kendaraan jika di dalam plot ada kursi/kendaraan terparkir
+            if plotsFolder and obj:IsDescendantOf(plotsFolder) then
+                continue
+            end
+            if obj.Name:lower():find("plot") then
+                continue
+            end
+            
             if obj:FindFirstChildWhichIsA("VehicleSeat", true) then
                 return obj
             end
