@@ -320,6 +320,66 @@ CollectTab:Toggle({
 
 CollectTab:Section({ Title = "Truck Utilities" })
 
+local function isGUID(str)
+    if type(str) ~= "string" then return false end
+    if #str ~= 36 then return false end
+    local hyphens = 0
+    for i = 1, #str do
+        if str:sub(i, i) == "-" then
+            hyphens = hyphens + 1
+        end
+    end
+    return hyphens == 4
+end
+
+local function getVehicleItems(vehicle)
+    local uids = {}
+    local seen = {}
+    
+    local function addUid(uid)
+        if isGUID(uid) and not seen[uid] then
+            seen[uid] = true
+            table.insert(uids, uid)
+        end
+    end
+    
+    if vehicle then
+        for _, desc in ipairs(vehicle:GetDescendants()) do
+            addUid(desc.Name)
+            if desc:IsA("StringValue") then
+                addUid(desc.Value)
+            end
+            
+            local attrs = desc:GetAttributes()
+            for k, v in pairs(attrs) do
+                if type(v) == "string" then
+                    addUid(v)
+                end
+            end
+        end
+    end
+    
+    -- Scan PlayerGui just in case (untuk trunk UI)
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        for _, desc in ipairs(playerGui:GetDescendants()) do
+            addUid(desc.Name)
+            if desc:IsA("StringValue") then
+                addUid(desc.Value)
+            end
+            
+            local attrs = desc:GetAttributes()
+            for k, v in pairs(attrs) do
+                if type(v) == "string" then
+                    addUid(v)
+                end
+            end
+        end
+    end
+    
+    return uids
+end
+
 CollectTab:Button({
     Title = 'Unload Truck',
     Desc = 'Pindahkan seluruh isi barang di kendaraan Anda ke inventori',
@@ -329,20 +389,21 @@ CollectTab:Button({
         print("[Unload Truck] Vehicle detected: " .. (vehicle and vehicle.Name or "None"))
         
         if TransferVehicleItemsToInventory then
-            -- Cobalah mengirim vehicle model tingkat tertinggi
-            local success, result = safeCallRemote(TransferVehicleItemsToInventory, vehicle)
-            
-            -- Jika pengiriman model gagal atau tidak merespon, coba kirim tanpa argumen
-            -- karena server mendeteksi otomatis dari seat player
-            if not success or result == nil then
-                print("[Unload Truck] Gagal dengan model, mencoba tanpa argumen...")
-                success, result = safeCallRemote(TransferVehicleItemsToInventory)
+            local itemUids = getVehicleItems(vehicle)
+            print("[Unload Truck] Ditemukan " .. tostring(#itemUids) .. " item UID di dalam kendaraan:")
+            for _, uid in ipairs(itemUids) do
+                print("  - " .. uid)
             end
             
-            if success then
-                print("[Unload Truck] Sukses mengirim perintah unload. Hasil: " .. tostring(result))
+            if #itemUids > 0 then
+                local success, result = safeCallRemote(TransferVehicleItemsToInventory, itemUids)
+                if success then
+                    print("[Unload Truck] Sukses mengirim perintah unload. Hasil: " .. tostring(result))
+                else
+                    warn("[Unload Truck] Gagal memicu unload: " .. tostring(result))
+                end
             else
-                warn("[Unload Truck] Gagal memicu unload: " .. tostring(result))
+                warn("[Unload Truck] Tidak ada item UID yang terdeteksi di dalam kendaraan!")
             end
         else
             warn("[Unload Truck] Remote TransferVehicleItemsToInventory belum siap!")
