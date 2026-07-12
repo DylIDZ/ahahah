@@ -44,7 +44,12 @@ local MinAcceptPercent = 15
 local AutoPlaceEnabled = false
 local AutoBid = false
 local MaxBid = 0
+local MinBid = 0
 local AutoCollect = false
+
+-- State lelang tambahan
+local ignoredAuctionUnits = {}
+local currentAuctionUnit = nil
 
 -- Variabel global remote game (akan diisi secara independen di background)
 local PlaceStockItem = nil
@@ -486,6 +491,19 @@ AuctionTab:Toggle({
 })
 
 AuctionTab:Textbox({
+    Title = 'Min Starting Bid',
+    Desc = 'Batas minimal harga awal lelang untuk ikut menawar',
+    Value = '0',
+    Placeholder = '0',
+    ClearText = false,
+    Callback = function(value)
+        local num = tonumber(value)
+        MinBid = num or 0
+        print("[Settings] MinBid set to: " .. tostring(MinBid))
+    end,
+})
+
+AuctionTab:Textbox({
     Title = 'Max Bid',
     Desc = 'Jumlah maksimum penawaran bid Anda',
     Value = '',
@@ -596,6 +614,23 @@ task.spawn(function()
             if UpdateCurrentWinningBid and BidEvent then
                 registerConnection(UpdateCurrentWinningBid.OnClientEvent:Connect(function(currentBid, winningPlayer, storageUnit, timeLeft)
                     if not AutoBid then return end
+                    
+                    -- Deteksi lelang unit baru
+                    if storageUnit and storageUnit ~= currentAuctionUnit then
+                        currentAuctionUnit = storageUnit
+                        if currentBid < MinBid then
+                            ignoredAuctionUnits[storageUnit] = true
+                            print("[Auction] Mengabaikan unit lelang " .. tostring(storageUnit) .. " karena harga awal (" .. tostring(currentBid) .. ") di bawah Min Bid (" .. tostring(MinBid) .. ")")
+                        else
+                            ignoredAuctionUnits[storageUnit] = false
+                            print("[Auction] Mengikuti lelang untuk unit " .. tostring(storageUnit) .. " dengan harga awal " .. tostring(currentBid))
+                        end
+                    end
+                    
+                    -- Jika unit ini ditandai untuk diabaikan, hentikan bid
+                    if storageUnit and ignoredAuctionUnits[storageUnit] then
+                        return
+                    end
                     
                     local isWinning = false
                     if typeof(winningPlayer) == "Instance" and winningPlayer:IsA("Player") then
