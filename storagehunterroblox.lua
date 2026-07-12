@@ -102,12 +102,6 @@ local function safeCallRemote(remote, ...)
     return false, "Invalid remote type"
 end
 
--- Safely get the local player's HumanoidRootPart
-local function getRootPart()
-    local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-    return character:WaitForChild('HumanoidRootPart')
-end
-
 -- Get the player's current vehicle (seated or owned in workspace)
 local function getMyVehicle()
     local character = LocalPlayer.Character
@@ -131,19 +125,25 @@ end
 
 -- Teleport utility supporting vehicle teleportation if seated
 local function teleportTo(destinationCFrame)
-    local vehicle = getMyVehicle()
-    if vehicle then
-        local vehicleRoot = vehicle.PrimaryPart or vehicle:FindFirstChild('VehicleSeat') or vehicle:FindFirstChildWhichIsA('BasePart')
-        if vehicleRoot then
-            vehicleRoot.CFrame = destinationCFrame
+    local status, err = pcall(function()
+        local vehicle = getMyVehicle()
+        if vehicle then
+            print("[Teleport] Teleporting vehicle: " .. tostring(vehicle))
+            vehicle:PivotTo(destinationCFrame)
             return
         end
-    end
-    
-    -- Standalone character teleport
-    local rootPart = getRootPart()
-    if rootPart then
-        rootPart.CFrame = destinationCFrame
+        
+        -- Standalone character teleport
+        local character = LocalPlayer.Character
+        if character then
+            print("[Teleport] Teleporting character")
+            character:PivotTo(destinationCFrame)
+        else
+            warn("[Teleport] Character not found!")
+        end
+    end)
+    if not status then
+        warn("[Teleport] Error: " .. tostring(err))
     end
 end
 
@@ -152,18 +152,18 @@ local function findLocationByName(name)
     local areas = Workspace:FindFirstChild("Areas")
     if areas then
         local found = areas:FindFirstChild(name, true)
-        if found and found:IsA("BasePart") then return found end
+        if found and (found:IsA("BasePart") or found:IsA("Model")) then return found end
     end
     
     local shops = Workspace:FindFirstChild("Shops")
     if shops then
         local found = shops:FindFirstChild(name, true)
-        if found and found:IsA("BasePart") then return found end
+        if found and (found:IsA("BasePart") or found:IsA("Model")) then return found end
     end
     
     -- Global fallback search
     for _, desc in ipairs(Workspace:GetDescendants()) do
-        if desc:IsA("BasePart") and desc.Name:lower():find(name:lower()) then
+        if (desc:IsA("BasePart") or desc:IsA("Model")) and desc.Name:lower():find(name:lower()) then
             return desc
         end
     end
@@ -349,7 +349,7 @@ TeleportTab:Button({
     Callback = function()
         local unpackZone = Workspace:FindFirstChild('UnpackZone')
         if unpackZone then
-            teleportTo(unpackZone.CFrame + Vector3.new(0, 5, 0))
+            teleportTo(unpackZone:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("UnpackZone not found!")
         end
@@ -373,7 +373,7 @@ TeleportTab:Button({
         local centrePiece = parts and parts:FindFirstChild('CentrePiece')
         
         if centrePiece then
-            teleportTo(centrePiece.CFrame + Vector3.new(0, 5, 0))
+            teleportTo(centrePiece:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("Junk Yard CentrePiece not found!")
         end
@@ -390,7 +390,7 @@ TeleportTab:Button({
         local road = parts and parts:FindFirstChild('Back Alley Road')
         
         if road then
-            teleportTo(road.CFrame + Vector3.new(0, 5, 0))
+            teleportTo(road:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("Back Alley Road not found!")
         end
@@ -406,7 +406,7 @@ TeleportTab:Button({
         local box = farmyard and farmyard:FindFirstChild('Lost and Found Box')
         
         if box then
-            teleportTo(box.CFrame + Vector3.new(0, 5, 0))
+            teleportTo(box:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("Farmyard Lost and Found Box not found!")
         end
@@ -422,7 +422,7 @@ TeleportTab:Button({
         local box = shipyard and shipyard:FindFirstChild('Lost and Found Box')
         
         if box then
-            teleportTo(box.CFrame + Vector3.new(0, 5, 0))
+            teleportTo(box:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("Shipyard Lost and Found Box not found!")
         end
@@ -437,7 +437,7 @@ TeleportTab:Button({
     Callback = function()
         local mallPart = findLocationByName("Mall") or findLocationByName("Pawn Shop")
         if mallPart then
-            teleportTo(mallPart.CFrame + Vector3.new(0, 5, 0))
+            teleportTo(mallPart:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("Mall location not found!")
         end
@@ -450,7 +450,7 @@ TeleportTab:Button({
     Callback = function()
         local cleanPart = findLocationByName("Cleaning") or findLocationByName("Wash") or findLocationByName("Cleaning Service")
         if cleanPart then
-            teleportTo(cleanPart.CFrame + Vector3.new(0, 5, 0))
+            teleportTo(cleanPart:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("Item Cleaning Service location not found!")
         end
@@ -463,7 +463,7 @@ TeleportTab:Button({
     Callback = function()
         local garagePart = findLocationByName("CarGarage") or findLocationByName("Car Garage") or findLocationByName("Garage")
         if garagePart then
-            teleportTo(garagePart.CFrame + Vector3.new(0, 5, 0))
+            teleportTo(garagePart:GetPivot() + Vector3.new(0, 5, 0))
         else
             warn("Car Garage location not found!")
         end
