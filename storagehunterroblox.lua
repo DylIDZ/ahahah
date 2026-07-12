@@ -901,17 +901,11 @@ startAutoPlaceLoop = function()
             end
             
             print("[Auto Place] GetPlayerInventory success: " .. tostring(success) .. ", type: " .. type(inventory))
-            if success and type(inventory) == "table" then
-                -- Print sample structure of first item for F9 debug logs
-                for k, v in pairs(inventory) do
-                    print("[Auto Place] Inventory Item Sample: Key=" .. tostring(k) .. ", Value type=" .. type(v))
-                    if type(v) == "table" then
-                        for kk, vv in pairs(v) do
-                            print("  " .. tostring(kk) .. " = " .. tostring(vv))
-                        end
-                    end
-                    break
-                end
+            if success and inventory then
+                pcall(function()
+                    local json = game:GetService("HttpService"):JSONEncode(inventory)
+                    print("[Auto Place] Inventory JSON Dump: " .. json)
+                end)
             end
             
             if not success or type(inventory) ~= "table" then
