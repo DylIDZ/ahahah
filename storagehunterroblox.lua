@@ -149,7 +149,17 @@ local function teleportTo(destinationCFrame)
         local vehicle = getMyVehicle()
         if vehicle then
             print("[Teleport] Teleporting vehicle: " .. tostring(vehicle))
-            vehicle:PivotTo(destinationCFrame)
+            -- Stabilisasi fisika sebelum teleportasi untuk menghindari snapback/glitch
+            local root = vehicle.PrimaryPart or vehicle:FindFirstChildWhichIsA("BasePart", true)
+            if root then
+                local wasAnchored = root.Anchored
+                root.Anchored = true
+                vehicle:PivotTo(destinationCFrame)
+                task.wait(0.15)
+                root.Anchored = wasAnchored
+            else
+                vehicle:PivotTo(destinationCFrame)
+            end
             return
         end
         
@@ -437,7 +447,11 @@ TeleportTab:Button({
     Title = 'TP base',
     Desc = 'Teleport ke base Anda (Truk ikut jika sedang dikendarai)',
     Callback = function()
-        local unpackZone = Workspace:FindFirstChild('UnpackZone')
+        -- Cari UnpackZone di plot kita dahulu (agar 100% teleport ke plot sendiri)
+        -- Jika tidak ketemu, cari secara rekursif di seluruh Workspace
+        local plot = getMyPlot()
+        local unpackZone = (plot and plot:FindFirstChild('UnpackZone', true)) or Workspace:FindFirstChild('UnpackZone', true)
+        
         if unpackZone then
             teleportTo(unpackZone:GetPivot() + Vector3.new(0, 5, 0))
         else
@@ -459,8 +473,7 @@ TeleportTab:Button({
     Callback = function()
         local areas = Workspace:FindFirstChild('Areas')
         local junkyard = areas and areas:FindFirstChild('Junk Yard')
-        local parts = junkyard and junkyard:FindFirstChild('Parts')
-        local centrePiece = parts and parts:FindFirstChild('CentrePiece')
+        local centrePiece = junkyard and junkyard:FindFirstChild('CentrePiece', true)
         
         if centrePiece then
             teleportTo(centrePiece:GetPivot() + Vector3.new(0, 5, 0))
@@ -476,8 +489,7 @@ TeleportTab:Button({
     Callback = function()
         local areas = Workspace:FindFirstChild('Areas')
         local backAlley = areas and areas:FindFirstChild('Back Alley')
-        local parts = backAlley and backAlley:FindFirstChild('Parts')
-        local road = parts and parts:FindFirstChild('Back Alley Road')
+        local road = backAlley and backAlley:FindFirstChild('Back Alley Road', true)
         
         if road then
             teleportTo(road:GetPivot() + Vector3.new(0, 5, 0))
@@ -493,7 +505,7 @@ TeleportTab:Button({
     Callback = function()
         local areas = Workspace:FindFirstChild('Areas')
         local farmyard = areas and areas:FindFirstChild('Farmyard')
-        local box = farmyard and farmyard:FindFirstChild('Lost and Found Box')
+        local box = farmyard and farmyard:FindFirstChild('Lost and Found Box', true)
         
         if box then
             teleportTo(box:GetPivot() + Vector3.new(0, 5, 0))
@@ -509,7 +521,7 @@ TeleportTab:Button({
     Callback = function()
         local areas = Workspace:FindFirstChild('Areas')
         local shipyard = areas and areas:FindFirstChild('Shipyard')
-        local box = shipyard and shipyard:FindFirstChild('Lost and Found Box')
+        local box = shipyard and shipyard:FindFirstChild('Lost and Found Box', true)
         
         if box then
             teleportTo(box:GetPivot() + Vector3.new(0, 5, 0))
