@@ -912,7 +912,9 @@ startAutoPlaceLoop = function()
             if inventory and type(inventory) == "table" then
                 -- Debug: Cetak isi inventori ke F9 console agar mempermudah pelacakan jika struktur data berbeda
                 pcall(function()
-                    print("[Auto Place] Menemukan " .. tostring(#inventory) .. " item di dalam inventori:")
+                    local itemCount = 0
+                    for _ in pairs(inventory) do itemCount = itemCount + 1 end
+                    print("[Auto Place] Menemukan " .. tostring(itemCount) .. " item di dalam inventori:")
                     for k, v in pairs(inventory) do
                         if type(v) == "table" then
                             local itemStr = "Item Key: " .. tostring(k) .. " -> "
@@ -941,18 +943,11 @@ startAutoPlaceLoop = function()
                         
                         if PlaceStockItem then
                             local placeStatus, placeErr = pcall(function()
-                                local defaultCFrame = plot:GetPivot() + Vector3.new(0, 3, 0)
                                 if PlaceStockItem:IsA("RemoteEvent") then
-                                    -- Coba berbagai variasi argumen secara aman (self-healing)
-                                    PlaceStockItem:FireServer(idToSend)
+                                    -- Sesuai dengan pembacaan Remote Spy Anda
                                     PlaceStockItem:FireServer(plot, idToSend)
-                                    PlaceStockItem:FireServer(idToSend, defaultCFrame)
-                                    PlaceStockItem:FireServer(plot, idToSend, defaultCFrame)
                                 elseif PlaceStockItem:IsA("RemoteFunction") then
-                                    PlaceStockItem:InvokeServer(idToSend)
                                     PlaceStockItem:InvokeServer(plot, idToSend)
-                                    PlaceStockItem:InvokeServer(idToSend, defaultCFrame)
-                                    PlaceStockItem:InvokeServer(plot, idToSend, defaultCFrame)
                                 end
                             end)
                             if not placeStatus then
