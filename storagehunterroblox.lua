@@ -1079,89 +1079,100 @@ startAutoPlaceLoop = function()
                 end)
             end
             
-            print("[Auto Place] GetPlayerInventory success: " .. tostring(success) .. ", type: " .. type(inventory))
-            if success and inventory then
-                pcall(function()
-                    local json = game:GetService("HttpService"):JSONEncode(inventory)
-                    print("[Auto Place] Inventory JSON Dump: " .. json)
-                end)
-            end
-            
             if not success or type(inventory) ~= "table" then
                 inventory = getLocalInventory()
             end
             
+            -- Siapkan list barang dari inventory
+            local itemsToPlace = {}
             if inventory and type(inventory) == "table" then
-                -- Debug: Cetak isi inventori ke F9 console agar mempermudah pelacakan jika struktur data berbeda
-                pcall(function()
-                    local itemCount = 0
-                    for _ in pairs(inventory) do itemCount = itemCount + 1 end
-                    print("[Auto Place] Menemukan " .. tostring(itemCount) .. " item di dalam inventori:")
-                    for k, v in pairs(inventory) do
-                        if type(v) == "table" then
-                            local itemStr = "Item Key: " .. tostring(k) .. " -> "
-                            for kk, vv in pairs(v) do
-                                itemStr = itemStr .. tostring(kk) .. "=" .. tostring(vv) .. ", "
+                for itemUID, itemData in pairs(inventory) do
+                    local itemId = nil
+                    if type(itemData) == "table" then
+                        itemId = itemData.ItemId or itemData.itemId or itemData.Id or itemData.id
+                    else
+                        itemId = itemData
+                    end
+                    if itemUID and itemId then
+                        table.insert(itemsToPlace, { uid = itemUID, id = itemId })
+                    end
+                end
+            end
+            
+            -- Scan plot untuk mencari snap point meja/rak yang kosong (ShelfAddItemPrompt)
+            local emptySnapPoints = {}
+            if plot then
+                for _, desc in ipairs(plot:GetDescendants()) do
+                    if desc:IsA("ProximityPrompt") and desc.Name == "ShelfAddItemPrompt" and desc.Enabled then
+                        local snapPoint = desc.Parent
+                        if snapPoint and snapPoint:IsA("BasePart") then
+                            local current = snapPoint
+                            local shelfGUID = nil
+                            while current and current ~= plot do
+                                shelfGUID = current:GetAttribute("GUID")
+                                if shelfGUID then break end
+                                current = current.Parent
                             end
-                            print("  " .. itemStr)
-                        else
-                            print("  Key=" .. tostring(k) .. ", Value=" .. tostring(v))
+                            if shelfGUID then
+                                table.insert(emptySnapPoints, {
+                                    prompt = desc,
+                                    snapPoint = snapPoint,
+                                    shelfGUID = shelfGUID,
+                                    name = snapPoint.Name
+                                })
+                            end
                         end
                     end
-                end)
-
-                for itemId, itemData in pairs(inventory) do
+                end
+            end
+            
+            -- Mulai meletakkan barang ke snap point kosong
+            if #itemsToPlace > 0 and #emptySnapPoints > 0 then
+                print(string.format("[Auto Place] Menemukan %d item di inventori dan %d snap point kosong.", #itemsToPlace, #emptySnapPoints))
+                for _, snapPointInfo in ipairs(emptySnapPoints) do
                     if not AutoPlaceEnabled then break end
+                    if #itemsToPlace == 0 then break end
                     
-                    local idToSend = nil
+                    local item = table.remove(itemsToPlace, 1)
+                    print(string.format("[Auto Place] Meletakkan item %s (%s) ke rak %s (%s)", tostring(item.uid), tostring(item.id), snapPointInfo.name, snapPointInfo.shelfGUID))
                     
-                    -- 1. Cek apakah key (itemId) adalah GUID
-                    if isGUID(itemId) then
-                        idToSend = itemId
-                    end
-                    
-                    -- 2. Cek apakah ada field di dalam itemData yang merupakan GUID
-                    if not idToSend and type(itemData) == "table" then
-                        for _, val in pairs(itemData) do
-                            if isGUID(val) then
-                                idToSend = val
-                                break
+                    if PlaceStockItem then
+                        local placeStatus, placeErr = pcall(function()
+                            if PlaceStockItem:IsA("RemoteEvent") then
+                                PlaceStockItem:FireServer(
+                                    item.uid,
+                                    tostring(item.id),
+                                    snapPointInfo.snapPoint.CFrame,
+                                    0, -- YRotation default
+                                    snapPointInfo.shelfGUID,
+                                    snapPointInfo.name
+                                )
+                            elseif PlaceStockItem:IsA("RemoteFunction") then
+                                PlaceStockItem:InvokeServer(
+                                    item.uid,
+                                    tostring(item.id),
+                                    snapPointInfo.snapPoint.CFrame,
+                                    0, -- YRotation default
+                                    snapPointInfo.shelfGUID,
+                                    snapPointInfo.name
+                                )
                             end
-                        end
-                    end
-                    
-                    -- 3. Fallback biasa jika tidak ada GUID
-                    if not idToSend then
-                        if type(itemData) == "table" then
-                            idToSend = itemData.UID or itemData.uid or itemData.UUID or itemData.uuid or itemData.Id or itemData.id or itemData.ItemId or itemData.itemId or itemId
-                        else
-                            idToSend = itemData
-                        end
-                    end
-                    
-                    if idToSend then
-                        print("[Auto Place] Mencoba meletakkan barang: " .. tostring(idToSend) .. " ke Plot: " .. plot.Name)
-                        
-                        if PlaceStockItem then
-                            local placeStatus, placeErr = pcall(function()
-                                if PlaceStockItem:IsA("RemoteEvent") then
-                                    -- Sesuai dengan pembacaan Remote Spy Anda
-                                    PlaceStockItem:FireServer(plot, idToSend)
-                                elseif PlaceStockItem:IsA("RemoteFunction") then
-                                    PlaceStockItem:InvokeServer(plot, idToSend)
-                                end
-                            end)
-                            if not placeStatus then
-                                warn("[Auto Place] Gagal mengirim perintah: " .. tostring(placeErr))
-                            end
-                        else
-                            warn("[Auto Place] Remote PlaceStockItem belum siap!")
+                        end)
+                        if not placeStatus then
+                            warn("[Auto Place] Gagal meletakkan barang: " .. tostring(placeErr))
                         end
                         task.wait(0.5) -- Throttle anti-kick
+                    else
+                        warn("[Auto Place] Remote PlaceStockItem belum siap!")
+                        break
                     end
                 end
             else
-                print("[Auto Place] Inventori kosong atau tidak terbaca.")
+                if #itemsToPlace == 0 then
+                    print("[Auto Place] Inventori kosong.")
+                elseif #emptySnapPoints == 0 then
+                    print("[Auto Place] Tidak ada snap point (meja/rak pajangan) kosong di plot Anda.")
+                end
             end
             task.wait(2)
         end
