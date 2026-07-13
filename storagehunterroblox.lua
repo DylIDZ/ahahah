@@ -1103,9 +1103,9 @@ startAutoPlaceLoop = function()
             local emptySnapPoints = {}
             if plot then
                 for _, desc in ipairs(plot:GetDescendants()) do
-                    if desc:IsA("ProximityPrompt") and desc.Name == "ShelfAddItemPrompt" and desc.Enabled then
+                    if desc:IsA("ProximityPrompt") and (desc.Name:lower():find("ShelfAddItemPrompt") or desc.ActionText:lower():find("Add item")) and desc.Enabled then
                         local snapPoint = desc.Parent
-                        if snapPoint and snapPoint:IsA("BasePart") then
+                        if snapPoint and (snapPoint:IsA("BasePart") or snapPoint:IsA("Attachment")) then
                             local current = snapPoint
                             local shelfGUID = nil
                             while current and current ~= plot do
@@ -1114,9 +1114,11 @@ startAutoPlaceLoop = function()
                                 current = current.Parent
                             end
                             if shelfGUID then
+                                local worldCFrame = snapPoint:IsA("Attachment") and snapPoint.WorldCFrame or snapPoint.CFrame
                                 table.insert(emptySnapPoints, {
                                     prompt = desc,
                                     snapPoint = snapPoint,
+                                    worldCFrame = worldCFrame,
                                     shelfGUID = shelfGUID,
                                     name = snapPoint.Name
                                 })
@@ -1142,7 +1144,7 @@ startAutoPlaceLoop = function()
                                 PlaceStockItem:FireServer(
                                     item.uid,
                                     tostring(item.id),
-                                    snapPointInfo.snapPoint.CFrame,
+                                    snapPointInfo.worldCFrame,
                                     0, -- YRotation default
                                     snapPointInfo.shelfGUID,
                                     snapPointInfo.name
@@ -1151,7 +1153,7 @@ startAutoPlaceLoop = function()
                                 PlaceStockItem:InvokeServer(
                                     item.uid,
                                     tostring(item.id),
-                                    snapPointInfo.snapPoint.CFrame,
+                                    snapPointInfo.worldCFrame,
                                     0, -- YRotation default
                                     snapPointInfo.shelfGUID,
                                     snapPointInfo.name
