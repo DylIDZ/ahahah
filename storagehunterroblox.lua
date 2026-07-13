@@ -1236,23 +1236,53 @@ TeleportTab:Button({
     end,
 })
 
+TeleportTab:Button({
+    Title = 'TP to Jurassic',
+    Desc = 'Teleport ke area Jurassic',
+    Callback = function()
+        local areas = Workspace:FindFirstChild('Areas')
+        local jurassic = areas and areas:FindFirstChild('Jurassic')
+        local boundary = jurassic and jurassic:FindFirstChild('AreaBoundary')
+        local pillar = boundary and boundary:FindFirstChild('AreaPillar')
+        
+        if pillar then
+            teleportTo(pillar:GetPivot() + Vector3.new(0, 5, 0))
+        else
+            local fallback = pillar or boundary or jurassic
+            if fallback then
+                teleportTo(fallback:GetPivot() + Vector3.new(0, 5, 0))
+            else
+                warn("Jurassic area location not found!")
+            end
+        end
+    end,
+})
+
 TeleportTab:Section({ Title = 'Shops' })
 
 TeleportTab:Button({
     Title = 'TP Mall',
-    Desc = 'Teleport ke Pawn Shop / Mall (Road Navigation)',
+    Desc = 'Teleport ke Pawn Shop / Mall',
     Callback = function()
-        local roadNav = Workspace:FindFirstChild("RoadNavigation")
-        local target = roadNav and roadNav:GetChildren()[49]
-        if target then
-            teleportTo(target:GetPivot() + Vector3.new(0, 5, 0))
+        local areas = Workspace:FindFirstChild('Areas')
+        local shoppingMall = areas and areas:FindFirstChild('Shopping Mall')
+        local boundary = shoppingMall and shoppingMall:FindFirstChild('AreaBoundary')
+        
+        if boundary then
+            teleportTo(boundary:GetPivot() + Vector3.new(0, 5, 0))
         else
-            local mallPart = findLocationByName("Mall") or findLocationByName("Pawn Shop")
-            if mallPart then
-                local tf = getBestTeleportCFrame(mallPart, {"PawnShopOwner", "Pawn Shop NPC", "Collector", "Pawn", "Counter", "Register", "Cashier", "Floor", "Base", "Main", "Entrance"})
-                teleportTo(tf + Vector3.new(0, 5, 0))
+            local roadNav = Workspace:FindFirstChild("RoadNavigation")
+            local target = roadNav and roadNav:GetChildren()[49]
+            if target then
+                teleportTo(target:GetPivot() + Vector3.new(0, 5, 0))
             else
-                warn("Mall location not found!")
+                local mallPart = findLocationByName("Mall") or findLocationByName("Pawn Shop")
+                if mallPart then
+                    local tf = getBestTeleportCFrame(mallPart, {"PawnShopOwner", "Pawn Shop NPC", "Collector", "Pawn", "Counter", "Register", "Cashier", "Floor", "Base", "Main", "Entrance"})
+                    teleportTo(tf + Vector3.new(0, 5, 0))
+                else
+                    warn("Mall location not found!")
+                end
             end
         end
     end,
