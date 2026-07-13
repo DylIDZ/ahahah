@@ -47,6 +47,45 @@ local MaxBid = 0
 local MinBid = 0
 local AutoCollect = false
 
+-- Auto Sell State
+local AutoSellEnabled = false
+local MinSellRate = -15
+local MinWeight = 20
+local SaveTrophies = true
+local SaveAccessories = true
+local CurrentWeight = 0
+local CurrentRate = 1.0
+local SellCooldown = 0
+local SellSyncing = false
+
+-- Pathfinder State
+local PathfinderEnabled = false
+local PathfinderPhase = "Idle"
+local PathfinderStatus = "Waiting for activation"
+local PathfinderRunning = false
+local State_itemsAvailable = false
+local AreaToggles = {
+    ["Junk Yard"] = true,
+    ["Back Alley"] = true,
+    ["Farmyard"] = true,
+    ["Shipyard"] = true
+}
+
+local ItemsModule = (function()
+    local ok, result = pcall(function()
+        return require(ReplicatedStorage.Modules.Items)
+    end)
+    if ok then return result end
+    return {}
+end)()
+
+local AREA_GARAGES = {
+    ["Junk Yard"] = { "Scrap Garage" },
+    ["Back Alley"] = { "Shop Front" },
+    ["Farmyard"] = { "Stable Garage", "Barn Garage" },
+    ["Shipyard"] = { "Small Container Garage", "Large Container Garage", "Warehouse Garage" }
+}
+
 -- State lelang tambahan
 local ignoredAuctionUnits = {}
 local currentAuctionUnit = nil
@@ -57,6 +96,15 @@ local GetPlayerInventory = nil
 local TransferVehicleItemsToInventory = nil
 local BidEvent = nil
 local GetShopStock = nil
+
+local GetPawnState = nil
+local GetSellableItems = nil
+local SellItems = nil
+local RateChanged = nil
+local VehicleWeightUpdate = nil
+local AuctionPickupStart = nil
+local AuctionPickupEnd = nil
+local LeaveAuctionRemote = nil
 
 -- List untuk melacak koneksi event aktif agar bisa di-disconnect saat re-execute
 local activeConnections = {}
@@ -73,6 +121,9 @@ getgenv().StorageHuntersScriptCleanUp = function()
     AutoPlaceEnabled = false
     AutoBid = false
     AutoCollect = false
+    AutoSellEnabled = false
+    PathfinderEnabled = false
+    PathfinderRunning = false
     
     -- Putuskan semua koneksi event
     for _, conn in ipairs(activeConnections) do
@@ -89,6 +140,179 @@ end
 -- =============================================================================
 -- HELPER FUNCTIONS
 -- =============================================================================
+
+-- Helper to get player Character Root Part
+local function getRoot()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    return root
+end
+
+-- Helper to get player Humanoid
+local function getHumanoid()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    return char:FindFirstChildOfClass("Humanoid")
+end
+
+-- Find nearest EnterAuction proximity prompt
+local function findNearestAuction()
+    local root = getRoot()
+    if not root then return nil end
+    
+    local rootPos = root.Position
+    local bestDist = math.huge
+    local bestPrompt = nil
+    
+    for _, prompt in ipairs(Workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") and prompt.Name == "EnterAuction" then
+            local garageType = prompt.ObjectText
+            local areaMatch = false
+            local areaName = nil
+            for area, garages in pairs(AREA_GARAGES) do
+                if AreaToggles[area] then
+                    for _, g in ipairs(garages) do
+                        if g == garageType then
+                            areaMatch = true
+                            areaName = area
+                            break
+                        end
+                    end
+                end
+                if areaMatch then break end
+            end
+            
+            if areaMatch then
+                local promptParent = prompt.Parent
+                if promptParent then
+                    local dist = (promptParent.Position - rootPos).Magnitude
+                    if dist < bestDist then
+                        bestDist = dist
+                        bestPrompt = {
+                            prompt = prompt,
+                            promptParent = promptParent,
+                            position = promptParent.Position,
+                            garageType = garageType,
+                            areaName = areaName,
+                            distance = dist
+                        }
+                    end
+                end
+            end
+        end
+    end
+    
+    return bestPrompt
+end
+
+-- Walk to a target position using PathfindingService
+local function walkTo(targetPos, timeoutSeconds)
+    local hum = getHumanoid()
+    local root = getRoot()
+    if not hum or not root then
+        task.wait(1)
+        return false
+    end
+    
+    local startTime = tick()
+    while tick() - startTime < (timeoutSeconds or 30) do
+        root = getRoot()
+        hum = getHumanoid()
+        if not root or not hum then
+            return false
+        end
+        
+        local dist = (root.Position - targetPos).Magnitude
+        if dist < 5 then
+            hum:MoveTo(targetPos)
+            return true
+        end
+        
+        local pathParams = {
+            AgentRadius = 2,
+            AgentHeight = 5,
+            AgentCanJump = true,
+            AgentMaxSlope = 45,
+            WaypointSpacing = 4
+        }
+        local ok, path = pcall(function()
+            local p = game:GetService("PathfindingService"):CreatePath(pathParams)
+            p:ComputeAsync(root.Position, targetPos)
+            return p
+        end)
+        
+        if ok and path and path.Status == Enum.PathStatus.Success then
+            local waypoints = path:GetWaypoints()
+            hum:MoveTo(waypoints[#waypoints].Position)
+            
+            for _, wp in ipairs(waypoints) do
+                if tick() - startTime >= (timeoutSeconds or 30) then
+                    hum:MoveTo(root.Position)
+                    return false
+                end
+                
+                if wp.Action == Enum.PathWaypointAction.Jump then
+                    hum.Jump = true
+                end
+                
+                hum:MoveTo(wp.Position)
+                repeat
+                    task.wait(0.1)
+                    root = getRoot()
+                    if not root then
+                        hum:MoveTo(root and root.Position or Vector3.new())
+                        return false
+                    end
+                until (root.Position - wp.Position).Magnitude < 5 or not hum
+            end
+        else
+            hum:MoveTo(targetPos)
+            task.wait(1)
+        end
+        
+        root = getRoot()
+        if root and (root.Position - targetPos).Magnitude < 5 then
+            hum:MoveTo(targetPos)
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- Find ProximityPrompts of a specific name within a radius
+local function findPromptsNear(centerPos, radius, promptName)
+    local results = {}
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") and desc.Name == promptName then
+            local parentPart = desc.Parent
+            if parentPart and parentPart:IsA("BasePart") then
+                local dist = (parentPart.Position - centerPos).Magnitude
+                if dist <= radius then
+                    table.insert(results, {
+                        prompt = desc,
+                        part = parentPart,
+                        position = parentPart.Position,
+                        distance = dist
+                    })
+                end
+            end
+        end
+    end
+    table.sort(results, function(a, b) return a.distance < b.distance end)
+    return results
+end
+
+-- Trigger ProximityPrompt instantly
+local function triggerPrompt(prompt)
+    local ok = pcall(function()
+        fireproximityprompt(prompt)
+    end)
+    task.wait(0.1)
+    return ok
+end
 
 -- Safely call remote events or functions without causing execution halts
 local function safeCallRemote(remote, ...)
@@ -137,16 +361,18 @@ local function getMyVehicle()
     local plotsFolder = Workspace:FindFirstChild("_Plots")
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj:GetAttribute("OwnerUserId") == LocalPlayer.UserId then
-            -- Mencegah plot terdeteksi sebagai kendaraan jika di dalam plot ada kursi/kendaraan terparkir
+            local isPlot = false
             if plotsFolder and obj:IsDescendantOf(plotsFolder) then
-                continue
+                isPlot = true
             end
             if obj.Name:lower():find("plot") then
-                continue
+                isPlot = true
             end
             
-            if obj:FindFirstChildWhichIsA("VehicleSeat", true) then
-                return obj
+            if not isPlot then
+                if obj:FindFirstChildWhichIsA("VehicleSeat", true) then
+                    return obj
+                end
             end
         end
     end
@@ -305,6 +531,7 @@ local Window = Library:Window({
 local AuctionTab = Window:Tab({Title = "Auction", Icon = "star"})
 local TeleportTab = Window:Tab({Title = "Teleport", Icon = "map"})
 local CollectTab = Window:Tab({Title = "Collect", Icon = "briefcase"})
+local PathfinderTab = Window:Tab({Title = "Pathfinder", Icon = "map"})
 
 -- -----------------------------------------------------------------------------
 -- Collect Tab Elements
@@ -681,6 +908,136 @@ CollectTab:Toggle({
 })
 
 -- -----------------------------------------------------------------------------
+-- Collect Tab Elements: Auto Sell Section
+-- -----------------------------------------------------------------------------
+CollectTab:Section({ Title = "Auto Sell" })
+
+CollectTab:Toggle({
+    Title = 'Auto Sell Enabled',
+    Desc = 'Otomatis menjual barang ketika harga dan kapasitas terpenuhi',
+    Value = false,
+    Callback = function(state)
+        AutoSellEnabled = state
+        if state then
+            startAutoSellLoop()
+        end
+    end,
+})
+
+CollectTab:Slider({
+    Title = 'Min Sell Rate (%)',
+    Desc = 'Persentase minimal rate quick-sell lelang (profit/loss)',
+    Min = -50,
+    Max = 50,
+    Value = -15,
+    Rounding = 0,
+    Callback = function(value)
+        MinSellRate = value
+    end,
+})
+
+CollectTab:Slider({
+    Title = 'Min Load Weight (kg)',
+    Desc = 'Kapasitas muatan kendaraan minimal sebelum menjual',
+    Min = 0,
+    Max = 100,
+    Value = 20,
+    Rounding = 0,
+    Callback = function(value)
+        MinWeight = value
+    end,
+})
+
+CollectTab:Toggle({
+    Title = 'Save Trophies',
+    Desc = 'Jangan jual barang kategori Trophy (misal Gavel Trophy)',
+    Value = true,
+    Callback = function(state)
+        SaveTrophies = state
+    end,
+})
+
+CollectTab:Toggle({
+    Title = 'Save Accessories',
+    Desc = 'Jangan jual barang kategori Accessories',
+    Value = true,
+    Callback = function(state)
+        SaveAccessories = state
+    end,
+})
+
+CollectTab:Section({ Title = "Auto Sell Live Status" })
+
+local RateLabel = CollectTab:Label({
+    Title = 'Current Rate',
+    Desc = 'Rate: Wait for data...'
+})
+
+local WeightLabel = CollectTab:Label({
+    Title = 'Vehicle Load',
+    Desc = 'Weight: Wait for data...'
+})
+
+local SellStatusLabel = CollectTab:Label({
+    Title = 'Status',
+    Desc = 'Inactive'
+})
+
+CollectTab:Button({
+    Title = 'Refresh Rate Now',
+    Desc = 'Paksa update data rate Pawn Shop saat ini',
+    Callback = function()
+        task.spawn(function()
+            if GetPawnState then
+                local ok, state = pcall(function()
+                    return GetPawnState:InvokeServer()
+                end)
+                if ok and type(state) == "table" and state.rate then
+                    CurrentRate = state.rate
+                end
+            end
+        end)
+    end,
+})
+
+registerConnection(game:GetService("RunService").Heartbeat:Connect(function()
+    if not RateLabel or not WeightLabel or not SellStatusLabel then return end
+    
+    local pct = math.floor((CurrentRate - 1) * 100 + 0.5)
+    local rateText = pct >= 0 and "+" .. pct .. "%" or pct .. "%"
+    RateLabel:SetDesc("Rate: " .. rateText)
+    
+    WeightLabel:SetDesc("Weight: " .. math.floor(CurrentWeight) .. " kg")
+    
+    if not AutoSellEnabled then
+        SellStatusLabel:SetDesc("Disabled")
+        return
+    end
+    
+    if pct < MinSellRate then
+        SellStatusLabel:SetDesc(string.format("Waiting rate (%d%% < %d%%)", pct, MinSellRate))
+        return
+    end
+    
+    if CurrentWeight < MinWeight then
+        SellStatusLabel:SetDesc(string.format("Waiting weight (%dkg < %dkg)", math.floor(CurrentWeight), MinWeight))
+        return
+    end
+    
+    if SellSyncing then
+        SellStatusLabel:SetDesc("Selling...")
+        return
+    end
+    
+    if tick() < SellCooldown then
+        SellStatusLabel:SetDesc(string.format("Cooldown (%ds)", math.ceil(SellCooldown - tick())))
+        return
+    end
+    
+    SellStatusLabel:SetDesc("Ready to sell")
+end))
+
+-- ---------------------------------------------------------------------------------------------
 -- Teleport Tab Elements
 -- -----------------------------------------------------------------------------
 TeleportTab:Section({ Title = "Base Teleport" })
@@ -896,6 +1253,94 @@ AuctionTab:Textbox({
     end,
 })
 
+AuctionTab:Button({
+    Title = "Leave Auction",
+    Desc = "Keluar dari lelang aktif",
+    Callback = function()
+        local ok, result = pcall(function()
+            if LeaveAuctionRemote then
+                return LeaveAuctionRemote:InvokeServer()
+            end
+        end)
+        if ok and result then
+            local UIController = require(ReplicatedStorage.Modules.UIController)
+            UIController:Close("AuctionBidding")
+            UIController:Close("AuctionPowers")
+            UIController:Close("AuctionWinningBid")
+        end
+    end,
+})
+
+-- -----------------------------------------------------------------------------
+-- Pathfinder Tab Elements
+-- -----------------------------------------------------------------------------
+PathfinderTab:Section({ Title = "Master Control" })
+
+PathfinderTab:Toggle({
+    Title = "Master Pathfinder",
+    Desc = "Aktifkan siklus lelang otomatis (berjalan, trigger lelang, kumpulkan item)",
+    Value = false,
+    Callback = function(state)
+        setPathfinderEnabled(state)
+    end,
+})
+
+PathfinderTab:Section({ Title = "Target Areas" })
+
+PathfinderTab:Toggle({
+    Title = "Junk Yard",
+    Desc = "Scrap Garage",
+    Value = true,
+    Callback = function(state)
+        AreaToggles["Junk Yard"] = state
+    end,
+})
+
+PathfinderTab:Toggle({
+    Title = "Back Alley",
+    Desc = "Shop Front",
+    Value = true,
+    Callback = function(state)
+        AreaToggles["Back Alley"] = state
+    end,
+})
+
+PathfinderTab:Toggle({
+    Title = "Farmyard",
+    Desc = "Stable Garage, Barn Garage",
+    Value = true,
+    Callback = function(state)
+        AreaToggles["Farmyard"] = state
+    end,
+})
+
+PathfinderTab:Toggle({
+    Title = "Shipyard",
+    Desc = "Small, Large & Warehouse Garage",
+    Value = true,
+    Callback = function(state)
+        AreaToggles["Shipyard"] = state
+    end,
+})
+
+PathfinderTab:Section({ Title = "Status" })
+
+local PhaseLabel = PathfinderTab:Label({
+    Title = "Phase",
+    Desc = "Idle"
+})
+
+local StatusLabel = PathfinderTab:Label({
+    Title = "State",
+    Desc = "Waiting for activation..."
+})
+
+registerConnection(game:GetService("RunService").Heartbeat:Connect(function()
+    if not PhaseLabel or not StatusLabel then return end
+    PhaseLabel:SetDesc("Phase: " .. tostring(PathfinderPhase))
+    StatusLabel:SetDesc("State: " .. tostring(PathfinderStatus))
+end))
+
 -- =============================================================================
 -- BACKGROUND LOAD & CONNECTION SETUP (Non-Blocking & Independent Threads)
 -- =============================================================================
@@ -1023,13 +1468,55 @@ task.spawn(function()
         end
     end)
     
-    -- 6. Inisialisasi Lelang (Auto-Bid)
+    -- 6. Resolusi Remote untuk Pawn (Auto Sell)
+    task.spawn(function()
+        local Pawn = Events:WaitForChild('Pawn')
+        if Pawn then
+            GetPawnState = Pawn:WaitForChild('GetPawnState')
+            GetSellableItems = Pawn:WaitForChild('GetSellableItems')
+            SellItems = Pawn:WaitForChild('SellItems')
+            RateChanged = Pawn:WaitForChild('RateChanged')
+            
+            registerConnection(RateChanged.OnClientEvent:Connect(function(data)
+                if type(data) == "table" and data.rate then
+                    CurrentRate = data.rate
+                end
+            end))
+            print("[Storage Hunters] Remote Pawn events berhasil dideteksi!")
+        end
+    end)
+    
+    -- 7. Resolusi Remote untuk UI (Weight Update)
+    task.spawn(function()
+        local UIEvents = Events:WaitForChild('UI')
+        if UIEvents then
+            VehicleWeightUpdate = UIEvents:WaitForChild('VehicleWeightUpdate')
+            
+            registerConnection(VehicleWeightUpdate.OnClientEvent:Connect(function(currentKg, maxKg)
+                CurrentWeight = tonumber(currentKg) or 0
+            end))
+            print("[Storage Hunters] Remote UI events berhasil dideteksi!")
+        end
+    end)
+    
+    -- 8. Inisialisasi Lelang (Auto-Bid & Pickup)
     task.spawn(function()
         local AuctionEvents = Events:WaitForChild('Auction')
         if AuctionEvents then
             BidEvent = AuctionEvents:WaitForChild('Bid')
             local UpdateCurrentWinningBid = AuctionEvents:WaitForChild('UpdateCurrentWinningBid')
             local LeaveAuction = AuctionEvents:FindFirstChild('LeaveAuction') or AuctionEvents:WaitForChild('LeaveAuction')
+            LeaveAuctionRemote = LeaveAuction
+            
+            AuctionPickupStart = AuctionEvents:WaitForChild('AuctionPickupStart')
+            AuctionPickupEnd = AuctionEvents:WaitForChild('AuctionPickupEnd')
+            
+            registerConnection(AuctionPickupStart.OnClientEvent:Connect(function(bidAmount, totalValue)
+                State_itemsAvailable = true
+            end))
+            registerConnection(AuctionPickupEnd.OnClientEvent:Connect(function()
+                State_itemsAvailable = false
+            end))
             
             if UpdateCurrentWinningBid and BidEvent then
                 registerConnection(UpdateCurrentWinningBid.OnClientEvent:Connect(function(currentBid, winningPlayer, storageUnit, timeLeft)
@@ -1099,164 +1586,436 @@ end)
 -- =============================================================================
 startAutoPlaceLoop = function()
     task.spawn(function()
-        print("[Auto Place] Loop started")
         while AutoPlaceEnabled do
             local plot = getMyPlot()
-            if not plot then
-                warn("[Auto Place] Plot Anda tidak ditemukan di Workspace! Menunggu...")
-                task.wait(2)
-                continue
-            end
-            
-            print("[Auto Place] Menggunakan Plot: " .. plot.Name)
-            
-            -- Ambil data stock aktif dari plot (untuk mendeteksi snap point yang sudah terisi)
-            local occupiedPoints = {}
-            if GetShopStock then
-                local success, stock = pcall(function()
-                    return GetShopStock:InvokeServer(plot)
-                end)
-                if success and type(stock) == "table" then
-                    for _, itemGroup in ipairs(stock) do
-                        if type(itemGroup) == "table" then
-                            for _, placedItem in ipairs(itemGroup) do
-                                if type(placedItem) == "table" and placedItem.Attrs then
-                                    local sGUID = placedItem.Attrs.ShelfGUID or placedItem.Attrs.shelfGUID
-                                    local sName = placedItem.Attrs.SnapPointName or placedItem.Attrs.snapPointName
-                                    if sGUID and sName then
-                                        occupiedPoints[sGUID .. "_" .. sName] = true
+            if plot then
+                -- Ambil data stock aktif dari plot (untuk mendeteksi snap point yang sudah terisi)
+                local occupiedPoints = {}
+                if GetShopStock then
+                    local success, stock = pcall(function()
+                        return GetShopStock:InvokeServer(plot)
+                    end)
+                    if success and type(stock) == "table" then
+                        for _, itemGroup in ipairs(stock) do
+                            if type(itemGroup) == "table" then
+                                for _, placedItem in ipairs(itemGroup) do
+                                    if type(placedItem) == "table" and placedItem.Attrs then
+                                        local sGUID = placedItem.Attrs.ShelfGUID or placedItem.Attrs.shelfGUID
+                                        local sName = placedItem.Attrs.SnapPointName or placedItem.Attrs.snapPointName
+                                        if sGUID and sName then
+                                            occupiedPoints[sGUID .. "_" .. sName] = true
+                                        end
                                     end
                                 end
                             end
                         end
                     end
                 end
-            end
-            
-            -- Ambil data inventory (dari remote atau fallback lokal)
-            local success, inventory
-            if GetPlayerInventory then
-                success, inventory = pcall(function()
-                    if GetPlayerInventory:IsA("RemoteFunction") then
-                        return GetPlayerInventory:InvokeServer()
-                    end
-                end)
-            end
-            
-            if not success or type(inventory) ~= "table" then
-                inventory = getLocalInventory()
-            end
-            
-            -- Siapkan list barang dari inventory
-            local itemsToPlace = {}
-            if inventory and type(inventory) == "table" then
-                for itemUID, itemData in pairs(inventory) do
-                    local itemId = nil
-                    if type(itemData) == "table" then
-                        itemId = itemData.ItemId or itemData.itemId or itemData.Id or itemData.id
-                    else
-                        itemId = itemData
-                    end
-                    if itemUID and itemId then
-                        table.insert(itemsToPlace, { uid = itemUID, id = itemId })
+                
+                -- Ambil data inventory (dari remote atau fallback lokal)
+                local success, inventory
+                if GetPlayerInventory then
+                    success, inventory = pcall(function()
+                        if GetPlayerInventory:IsA("RemoteFunction") then
+                            return GetPlayerInventory:InvokeServer()
+                        end
+                    end)
+                end
+                
+                if not success or type(inventory) ~= "table" then
+                    inventory = getLocalInventory()
+                end
+                
+                -- Siapkan list barang dari inventory
+                local itemsToPlace = {}
+                if inventory and type(inventory) == "table" then
+                    for itemUID, itemData in pairs(inventory) do
+                        local itemId = nil
+                        if type(itemData) == "table" then
+                            itemId = itemData.ItemId or itemData.itemId or itemData.Id or itemData.id
+                        else
+                            itemId = itemData
+                        end
+                        if itemUID and itemId then
+                            table.insert(itemsToPlace, { uid = itemUID, id = itemId })
+                        end
                     end
                 end
-            end
-            
-            -- Scan plot untuk mencari snap point meja/rak yang kosong
-            local emptySnapPoints = {}
-            if plot then
-                local foundPrompts = 0
-                for _, desc in ipairs(plot:GetDescendants()) do
-                    if desc:IsA("ProximityPrompt") then
-                        local promptName = desc.Name:lower()
-                        local actionText = desc.ActionText:lower()
-                        
-                        -- Pengecekan case-insensitive yang benar
-                        if promptName:find("additem") or actionText:find("add item") then
-                            foundPrompts = foundPrompts + 1
-                            local snapPoint = desc.Parent
-                            if snapPoint and (snapPoint:IsA("BasePart") or snapPoint:IsA("Attachment")) then
-                                local current = snapPoint
-                                local shelfGUID = nil
-                                while current and current ~= plot do
-                                    shelfGUID = current:GetAttribute("GUID")
-                                    if shelfGUID then break end
-                                    current = current.Parent
+                
+                -- Scan plot untuk mencari snap point meja/rak yang kosong
+                local emptySnapPoints = {}
+                if plot then
+                    for _, desc in ipairs(plot:GetDescendants()) do
+                        if desc:IsA("ProximityPrompt") then
+                            local promptName = desc.Name:lower()
+                            local actionText = desc.ActionText:lower()
+                            
+                            -- Pengecekan case-insensitive yang benar
+                            if promptName:find("additem") or actionText:find("add item") then
+                                local snapPoint = desc.Parent
+                                if snapPoint and (snapPoint:IsA("BasePart") or snapPoint:IsA("Attachment")) then
+                                    local current = snapPoint
+                                    local shelfGUID = nil
+                                    while current and current ~= plot do
+                                        shelfGUID = current:GetAttribute("GUID")
+                                        if shelfGUID then break end
+                                        current = current.Parent
+                                    end
+                                    
+                                    if shelfGUID then
+                                        local key = shelfGUID .. "_" .. snapPoint.Name
+                                        if not occupiedPoints[key] then
+                                            local worldCFrame = snapPoint:IsA("Attachment") and snapPoint.WorldCFrame or snapPoint.CFrame
+                                            table.insert(emptySnapPoints, {
+                                                prompt = desc,
+                                                snapPoint = snapPoint,
+                                                worldCFrame = worldCFrame,
+                                                shelfGUID = shelfGUID,
+                                                name = snapPoint.Name
+                                            })
+                                        end
+                                    end
                                 end
-                                
-                                if shelfGUID then
-                                    local key = shelfGUID .. "_" .. snapPoint.Name
-                                    if not occupiedPoints[key] then
-                                        local worldCFrame = snapPoint:IsA("Attachment") and snapPoint.WorldCFrame or snapPoint.CFrame
-                                        table.insert(emptySnapPoints, {
+                            end
+                        end
+                    end
+                end
+                
+                -- Mulai meletakkan barang ke snap point kosong
+                if #itemsToPlace > 0 and #emptySnapPoints > 0 then
+                    for _, snapPointInfo in ipairs(emptySnapPoints) do
+                        if not AutoPlaceEnabled then break end
+                        if #itemsToPlace == 0 then break end
+                        
+                        local item = table.remove(itemsToPlace, 1)
+                        print(string.format("[Auto Place] Meletakkan item %s (%s) ke rak %s (%s)", tostring(item.uid), tostring(item.id), snapPointInfo.name, snapPointInfo.shelfGUID))
+                        
+                        if PlaceStockItem then
+                            local placeStatus, placeErr = pcall(function()
+                                if PlaceStockItem:IsA("RemoteEvent") then
+                                    PlaceStockItem:FireServer(
+                                        item.uid,
+                                        tostring(item.id),
+                                        snapPointInfo.worldCFrame,
+                                        0, -- YRotation default
+                                        snapPointInfo.shelfGUID,
+                                        snapPointInfo.name
+                                    )
+                                elseif PlaceStockItem:IsA("RemoteFunction") then
+                                    PlaceStockItem:InvokeServer(
+                                        item.uid,
+                                        tostring(item.id),
+                                        snapPointInfo.worldCFrame,
+                                        0, -- YRotation default
+                                        snapPointInfo.shelfGUID,
+                                        snapPointInfo.name
+                                    )
+                                end
+                            end)
+                            if not placeStatus then
+                                warn("[Auto Place] Gagal meletakkan barang: " .. tostring(placeErr))
+                            end
+                            task.wait(0.5) -- Throttle anti-kick
+                        else
+                            break
+                        end
+                    end
+                end
+            else
+                task.wait(2)
+            end
+            task.wait(2)
+        end
+    end)
+end
+
+-- =============================================================================
+-- AUTO QUICK-SELL FUNCTION BODY
+-- =============================================================================
+local function startAutoSellLoop()
+    task.spawn(function()
+        while AutoSellEnabled do
+            if SellSyncing then
+                task.wait(1)
+            elseif tick() < SellCooldown then
+                task.wait(1)
+            else
+                -- Hitung persentase rate saat ini (misal 1.15 -> +15%)
+                local pct = math.floor((CurrentRate - 1) * 100 + 0.5)
+                if pct < MinSellRate then
+                    task.wait(2)
+                elseif CurrentWeight < MinWeight then
+                    task.wait(2)
+                else
+                    -- Siapkan proses penjualan
+                    SellSyncing = true
+                    
+                    if GetSellableItems and SellItems then
+                        local success, items = pcall(function()
+                            return GetSellableItems:InvokeServer()
+                        end)
+                        
+                        if success and type(items) == "table" then
+                            local toSell = {}
+                            for guid, info in pairs(items) do
+                                if not info.Favorited then
+                                    local itemDef = ItemsModule[info.ItemId]
+                                    local skip = false
+                                    if itemDef then
+                                        if SaveTrophies and itemDef.Category == "Trophy" then
+                                            skip = true
+                                        end
+                                        if SaveAccessories and itemDef.Category == "Accessories" then
+                                            skip = true
+                                        end
+                                    end
+                                    if not skip then
+                                        table.insert(toSell, guid)
+                                    end
+                                end
+                            end
+                            
+                            if #toSell > 0 then
+                                local sellSuccess, result = pcall(function()
+                                    return SellItems:InvokeServer(toSell)
+                                end)
+                                if sellSuccess then
+                                    -- Set cooldown 15 detik
+                                    SellCooldown = tick() + 15
+                                end
+                            end
+                        end
+                    end
+                    
+                    SellSyncing = false
+                    task.wait(2)
+                end
+            end
+        end
+    end)
+end
+
+-- =============================================================================
+-- PATHFINDER (AUTO AUCTION LOOP) BODY
+-- =============================================================================
+local function pathfinderLoop()
+    while PathfinderEnabled and PathfinderRunning do
+        -- STATE 1: FIND AUCTION
+        PathfinderPhase = "Finding Auction"
+        local target = findNearestAuction()
+        if not target then
+            PathfinderStatus = "No eligible auctions found, waiting..."
+            task.wait(5)
+        else
+            PathfinderStatus = "Walking to " .. target.garageType .. " (" .. target.areaName .. ")"
+
+            -- STATE 2: WALK TO AUCTION
+            PathfinderPhase = "Walking to Auction"
+            local walked = walkTo(target.position, 45)
+            if not walked then
+                PathfinderStatus = "Failed to reach auction, retrying..."
+                task.wait(3)
+            else
+                -- STATE 3: TRIGGER AUCTION
+                PathfinderPhase = "Triggering Auction"
+                PathfinderStatus = "Starting auction..."
+                walkTo(target.position, 5)
+
+                triggerPrompt(target.prompt)
+                task.wait(1)
+
+                local gui = LocalPlayer.PlayerGui:FindFirstChild("UIControllerGui")
+                local container = gui and gui:FindFirstChild("AuctionBiddingContainer")
+                if not (container and container.Visible) then
+                    triggerPrompt(target.prompt)
+                    task.wait(1)
+                end
+
+                -- STATE 4: WAIT FOR BIDDING TO FINISH
+                PathfinderPhase = "Waiting for Bidding"
+                PathfinderStatus = "Auction in progress, waiting..."
+
+                State_itemsAvailable = false
+                local biddingEndTime = tick()
+                local inAuction = true
+
+                while inAuction and PathfinderEnabled do
+                    task.wait(0.5)
+
+                    gui = LocalPlayer.PlayerGui:FindFirstChild("UIControllerGui")
+                    container = gui and gui:FindFirstChild("AuctionBiddingContainer")
+
+                    if not (container and container.Visible) then
+                        if State_itemsAvailable then
+                            inAuction = false
+                        else
+                            if tick() - biddingEndTime > 8 then
+                                inAuction = false
+                            end
+                        end
+                    else
+                        biddingEndTime = tick()
+                    end
+
+                    if tick() - biddingEndTime > 180 then
+                        inAuction = false
+                    end
+                end
+
+                -- STATE 5: COLLECT ITEMS (if won)
+                if State_itemsAvailable then
+                    PathfinderPhase = "Collecting Items"
+                    PathfinderStatus = "Auction won! Collecting..."
+                    task.wait(1)
+
+                    local function findGarageModel()
+                        for _, model in ipairs(Workspace:GetChildren()) do
+                            local name = model.Name
+                            if name == target.garageType or name:find(target.garageType) then
+                                return model
+                            end
+                        end
+                        return nil
+                    end
+
+                    local garageModel = findGarageModel()
+                    local garagePos = garageModel and garageModel:GetPivot().Position or target.position
+
+                    local blacklist = {}
+                    local function isBlacklisted(key)
+                        return blacklist[key] and blacklist[key].attempts >= 3
+                    end
+                    local function recordAttempt(key)
+                        blacklist[key] = blacklist[key] or { attempts = 0 }
+                        blacklist[key].attempts = blacklist[key].attempts + 1
+                    end
+
+                    local garageLoopStart = tick()
+                    local garageCleared = false
+
+                    while not garageCleared and PathfinderEnabled do
+                        if tick() - garageLoopStart > 20 then
+                            PathfinderStatus = "Garage timeout, moving on"
+                            task.wait(0.5)
+                            break
+                        end
+
+                        -- A: Open boxes
+                        PathfinderStatus = "Opening boxes..."
+                        local boxes = findPromptsNear(garagePos, 80, "OpenBoxPrompt")
+                        for i, box in ipairs(boxes) do
+                            if not PathfinderEnabled then break end
+                            local key = tostring(box.prompt)
+                            if not isBlacklisted(key) then
+                                PathfinderStatus = string.format("Opening box %d/%d", i, #boxes)
+                                local arrived = walkTo(box.position, 15)
+                                if arrived then
+                                    triggerPrompt(box.prompt)
+                                    task.wait(0.3)
+                                else
+                                    recordAttempt(key)
+                                end
+                            end
+                        end
+
+                        -- B: Collect items
+                        PathfinderStatus = "Collecting items..."
+                        local pickups = findPromptsNear(target.position, 60, "PickupPrompt")
+
+                        if #pickups == 0 and garageModel then
+                            pickups = findPromptsNear(garagePos, 80, "PickupPrompt")
+                        end
+
+                        if #pickups == 0 then
+                            for _, desc in ipairs(Workspace:GetDescendants()) do
+                                if desc:IsA("ProximityPrompt") and desc.Name == "PickupPrompt" then
+                                    local parent = desc.Parent
+                                    if parent and parent:IsA("BasePart") then
+                                        table.insert(pickups, {
                                             prompt = desc,
-                                            snapPoint = snapPoint,
-                                            worldCFrame = worldCFrame,
-                                            shelfGUID = shelfGUID,
-                                            name = snapPoint.Name
+                                            part = parent,
+                                            position = parent.Position,
+                                            distance = 0
                                         })
                                     end
                                 end
                             end
+                            table.sort(pickups, function(a, b) return a.distance < b.distance end)
                         end
-                    end
-                end
-                print(string.format("[Auto Place] Scan selesai: Menemukan %d prompt AddItem. Tersaring %d snap point kosong.", foundPrompts, #emptySnapPoints))
-            end
-            
-            -- Mulai meletakkan barang ke snap point kosong
-            if #itemsToPlace > 0 and #emptySnapPoints > 0 then
-                print(string.format("[Auto Place] Menemukan %d item di inventori dan %d snap point kosong.", #itemsToPlace, #emptySnapPoints))
-                for _, snapPointInfo in ipairs(emptySnapPoints) do
-                    if not AutoPlaceEnabled then break end
-                    if #itemsToPlace == 0 then break end
-                    
-                    local item = table.remove(itemsToPlace, 1)
-                    print(string.format("[Auto Place] Meletakkan item %s (%s) ke rak %s (%s)", tostring(item.uid), tostring(item.id), snapPointInfo.name, snapPointInfo.shelfGUID))
-                    
-                    if PlaceStockItem then
-                        local placeStatus, placeErr = pcall(function()
-                            if PlaceStockItem:IsA("RemoteEvent") then
-                                PlaceStockItem:FireServer(
-                                    item.uid,
-                                    tostring(item.id),
-                                    snapPointInfo.worldCFrame,
-                                    0, -- YRotation default
-                                    snapPointInfo.shelfGUID,
-                                    snapPointInfo.name
-                                )
-                            elseif PlaceStockItem:IsA("RemoteFunction") then
-                                PlaceStockItem:InvokeServer(
-                                    item.uid,
-                                    tostring(item.id),
-                                    snapPointInfo.worldCFrame,
-                                    0, -- YRotation default
-                                    snapPointInfo.shelfGUID,
-                                    snapPointInfo.name
-                                )
+
+                        for i, pickup in ipairs(pickups) do
+                            if not PathfinderEnabled then break end
+                            local key = tostring(pickup.prompt)
+                            if not isBlacklisted(key) then
+                                PathfinderStatus = string.format("Collecting item %d/%d", i, #pickups)
+                                local arrived = walkTo(pickup.position, 15)
+                                if arrived then
+                                    triggerPrompt(pickup.prompt)
+                                    task.wait(0.3)
+                                else
+                                    recordAttempt(key)
+                                end
                             end
-                        end)
-                        if not placeStatus then
-                            warn("[Auto Place] Gagal meletakkan barang: " .. tostring(placeErr))
                         end
-                        task.wait(0.5) -- Throttle anti-kick
-                    else
-                        warn("[Auto Place] Remote PlaceStockItem belum siap!")
-                        break
+
+                        task.wait(0.3)
+                        local remainingBoxes = findPromptsNear(garagePos, 80, "OpenBoxPrompt")
+                        local remainingItems = findPromptsNear(garagePos, 80, "PickupPrompt")
+
+                        if #remainingBoxes == 0 and #remainingItems == 0 then
+                            garageCleared = true
+                            PathfinderStatus = "Garage cleared!"
+                        else
+                            PathfinderStatus = string.format("Remaining: %d boxes, %d items", #remainingBoxes, #remainingItems)
+                        end
+                        task.wait(0.3)
                     end
+
+                    -- Exit garage
+                    PathfinderPhase = "Exiting Garage"
+                    PathfinderStatus = "Returning to board..."
+                    walkTo(target.position, 20)
+
+                    local exitStart = tick()
+                    local root = getRoot()
+                    while root and (root.Position - target.position).Magnitude >= 6 and PathfinderEnabled do
+                        if tick() - exitStart > 15 then break end
+                        root = getRoot()
+                        if root then
+                            local hum = getHumanoid()
+                            if hum then hum:MoveTo(target.position) end
+                        end
+                        task.wait(0.5)
+                    end
+                else
+                    PathfinderStatus = "Auction lost / no items"
+                    task.wait(2)
                 end
-            else
-                if #itemsToPlace == 0 then
-                    print("[Auto Place] Inventori kosong.")
-                elseif #emptySnapPoints == 0 then
-                    print("[Auto Place] Tidak ada snap point (meja/rak pajangan) kosong di plot Anda.")
-                end
+
+                PathfinderStatus = "Cycle complete, searching next..."
+                task.wait(1)
             end
-            task.wait(2)
         end
-        print("[Auto Place] Loop stopped")
-    end)
+    end
+
+    PathfinderPhase = "Idle"
+    if not PathfinderEnabled then
+        PathfinderStatus = "Disabled"
+    else
+        PathfinderStatus = "Stopped"
+    end
+    PathfinderRunning = false
+end
+
+local function setPathfinderEnabled(value)
+    PathfinderEnabled = value
+    if value and not PathfinderRunning then
+        PathfinderRunning = true
+        PathfinderStatus = "Starting..."
+        task.spawn(pathfinderLoop)
+    elseif not value then
+        PathfinderStatus = "Disabled"
+    end
 end
 
 -- =============================================================================
