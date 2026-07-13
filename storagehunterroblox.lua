@@ -443,6 +443,47 @@ local function findLocationByName(name)
     return nil
 end
 
+-- Get the best teleport CFrame for a Model/Part to avoid teleporting onto roofs
+local function getBestTeleportCFrame(instance, targetNames)
+    if not instance then return nil end
+    if instance:IsA("BasePart") then return instance:GetPivot() end
+    
+    -- 1. Cari part spesifik berdasarkan list targetNames (case-insensitive)
+    if targetNames and type(targetNames) == "table" then
+        for _, name in ipairs(targetNames) do
+            local found = instance:FindFirstChild(name, true)
+            if found then
+                if found:IsA("BasePart") or found:IsA("Model") then
+                    print("[Teleport] Menggunakan part spesifik: " .. found:GetFullName())
+                    return found:GetPivot()
+                end
+            end
+        end
+    end
+    
+    -- 2. Cari NPC (Model dengan HumanoidRootPart) di dalam instance
+    for _, desc in ipairs(instance:GetDescendants()) do
+        if desc:IsA("Model") and desc:FindFirstChild("HumanoidRootPart") then
+            print("[Teleport] Menggunakan NPC: " .. desc:GetFullName())
+            return desc:FindFirstChild("HumanoidRootPart"):GetPivot()
+        end
+    end
+    
+    -- 3. Cari part lantai atau jalan
+    for _, desc in ipairs(instance:GetDescendants()) do
+        if desc:IsA("BasePart") then
+            local name = desc.Name:lower()
+            if name:find("floor") or name:find("ground") or name:find("base") or name:find("street") or name:find("road") then
+                print("[Teleport] Menggunakan lantai/jalan: " .. desc:GetFullName())
+                return desc:GetPivot()
+            end
+        end
+    end
+    
+    -- 4. Fallback ke pivot model itu sendiri
+    return instance:GetPivot()
+end
+
 -- Find local player's plot
 local function getMyPlot()
     -- Coba cari di _Plots
@@ -1083,14 +1124,38 @@ end
 
 TeleportTab:Button({
     Title = 'TP base',
-    Desc = 'Teleport ke base (Harus ada minimal 1 barang di mobil agar Unpack Zone muncul)',
+    Desc = 'Teleport ke base (Mencari Unpack Zone, jika tidak ditemukan akan tp ke koordinat plot Anda)',
     Callback = function()
         local unpackZone = findUnpackZone()
         if unpackZone then
             print("[Teleport] Base UnpackZone ditemukan: " .. unpackZone:GetFullName())
             teleportTo(unpackZone:GetPivot() + Vector3.new(0, 5, 0))
         else
-            warn("UnpackZone not found! Pastikan ada minimal 1 barang di dalam mobil.")
+            print("[Teleport] UnpackZone tidak ditemukan! Mencari plot berdasarkan OwnerUserId...")
+            local plot = getMyPlot()
+            if plot then
+                print("[Teleport] Plot ditemukan: " .. plot:GetFullName())
+                local x = plot:GetAttribute("OriginX")
+                local y = plot:GetAttribute("OriginY")
+                local z = plot:GetAttribute("OriginZ")
+                
+                if x and y and z then
+                    print(string.format("[Teleport] Teleport ke koordinat origin plot: (%s, %s, %s)", tostring(x), tostring(y), tostring(z)))
+                    teleportTo(CFrame.new(x, y + 5, z))
+                else
+                    print("[Teleport] Atribut origin tidak lengkap. Menggunakan GetPivot().")
+                    teleportTo(plot:GetPivot() + Vector3.new(0, 5, 0))
+                end
+            else
+                warn("[Teleport] Plot tidak ditemukan!")
+                if Library and Library.Notify then
+                    Library:Notify({
+                        Title = "Teleport Gagal",
+                        Description = "Plot dan UnpackZone tidak ditemukan!",
+                        Time = 5
+                    })
+                end
+            end
         end
     end,
 })
@@ -1175,13 +1240,20 @@ TeleportTab:Section({ Title = 'Shops' })
 
 TeleportTab:Button({
     Title = 'TP Mall',
-    Desc = 'Teleport ke Pawn Shop / Mall',
+    Desc = 'Teleport ke Pawn Shop / Mall (Road Navigation)',
     Callback = function()
-        local mallPart = findLocationByName("Mall") or findLocationByName("Pawn Shop")
-        if mallPart then
-            teleportTo(mallPart:GetPivot() + Vector3.new(0, 5, 0))
+        local roadNav = Workspace:FindFirstChild("RoadNavigation")
+        local target = roadNav and roadNav:GetChildren()[49]
+        if target then
+            teleportTo(target:GetPivot() + Vector3.new(0, 5, 0))
         else
-            warn("Mall location not found!")
+            local mallPart = findLocationByName("Mall") or findLocationByName("Pawn Shop")
+            if mallPart then
+                local tf = getBestTeleportCFrame(mallPart, {"PawnShopOwner", "Pawn Shop NPC", "Collector", "Pawn", "Counter", "Register", "Cashier", "Floor", "Base", "Main", "Entrance"})
+                teleportTo(tf + Vector3.new(0, 5, 0))
+            else
+                warn("Mall location not found!")
+            end
         end
     end,
 })
@@ -1190,11 +1262,67 @@ TeleportTab:Button({
     Title = 'Item Cleaning Service',
     Desc = 'Teleport ke tempat pencucian barang / cleaning',
     Callback = function()
-        local cleanPart = findLocationByName("Cleaning") or findLocationByName("Wash") or findLocationByName("Cleaning Service")
-        if cleanPart then
-            teleportTo(cleanPart:GetPivot() + Vector3.new(0, 5, 0))
+        local shops = Workspace:FindFirstChild("Shops")
+        local cleaning = shops and (shops:FindFirstChild("Item Cleaning Services") or shops:FindFirstChild("Item Cleaning Service"))
+        local highlight = cleaning and cleaning:FindFirstChild("Circle highlight")
+        local target = highlight and highlight:GetChildren()[2]
+        
+        if target then
+            teleportTo(target:GetPivot() + Vector3.new(0, 5, 0))
         else
-            warn("Item Cleaning Service location not found!")
+            local cleanPart = findLocationByName("Cleaning") or findLocationByName("Wash") or findLocationByName("Cleaning Service")
+            if cleanPart then
+                local tf = getBestTeleportCFrame(cleanPart, {"Cleaner", "Cleaning NPC", "Counter", "Register", "Floor", "Base", "Main", "Entrance"})
+                teleportTo(tf + Vector3.new(0, 5, 0))
+            else
+                warn("Item Cleaning Service location not found!")
+            end
+        end
+    end,
+})
+
+TeleportTab:Button({
+    Title = 'Grading Store',
+    Desc = 'Teleport ke Grading Store',
+    Callback = function()
+        local shops = Workspace:FindFirstChild("Shops")
+        local grading = shops and shops:FindFirstChild("Grading Store")
+        local highlight = grading and grading:FindFirstChild("Circle highlight")
+        local target = highlight and highlight:GetChildren()[2]
+        
+        if target then
+            teleportTo(target:GetPivot() + Vector3.new(0, 5, 0))
+        else
+            local gradingPart = findLocationByName("Grading Store") or findLocationByName("Grading")
+            if gradingPart then
+                local tf = getBestTeleportCFrame(gradingPart, {"Grader", "Grading NPC", "Counter", "Register", "Floor", "Base"})
+                teleportTo(tf + Vector3.new(0, 5, 0))
+            else
+                warn("Grading Store location not found!")
+            end
+        end
+    end,
+})
+
+TeleportTab:Button({
+    Title = 'Quicksell Store',
+    Desc = 'Teleport ke Quick Sell Shop',
+    Callback = function()
+        local shops = Workspace:FindFirstChild("Shops")
+        local quckSell = shops and (shops:FindFirstChild("Quck Sell Shop") or shops:FindFirstChild("Quick Sell Shop") or shops:FindFirstChild("QuickSell"))
+        local highlight = quckSell and quckSell:FindFirstChild("Circle highlight")
+        local target = highlight and (highlight:FindFirstChild("Union") or highlight:GetChildren()[2])
+        
+        if target then
+            teleportTo(target:GetPivot() + Vector3.new(0, 5, 0))
+        else
+            local quckSellPart = findLocationByName("Quck Sell") or findLocationByName("Quick Sell") or findLocationByName("QuickSell")
+            if quckSellPart then
+                local tf = getBestTeleportCFrame(quckSellPart, {"Seller", "Counter", "Register", "Floor", "Base"})
+                teleportTo(tf + Vector3.new(0, 5, 0))
+            else
+                warn("Quick Sell Shop location not found!")
+            end
         end
     end,
 })
@@ -1205,7 +1333,8 @@ TeleportTab:Button({
     Callback = function()
         local garagePart = findLocationByName("CarGarage") or findLocationByName("Car Garage") or findLocationByName("Garage")
         if garagePart then
-            teleportTo(garagePart:GetPivot() + Vector3.new(0, 5, 0))
+            local tf = getBestTeleportCFrame(garagePart, {"Garage NPC", "Dealer", "Counter", "Floor", "Base", "Main", "Entrance"})
+            teleportTo(tf + Vector3.new(0, 5, 0))
         else
             warn("Car Garage location not found!")
         end
