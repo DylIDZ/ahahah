@@ -56,6 +56,7 @@ local PlaceStockItem = nil
 local GetPlayerInventory = nil
 local TransferVehicleItemsToInventory = nil
 local BidEvent = nil
+local GetShopStock = nil
 
 -- List untuk melacak koneksi event aktif agar bisa di-disconnect saat re-execute
 local activeConnections = {}
@@ -532,6 +533,43 @@ CollectTab:Button({
     end,
 })
 
+CollectTab:Button({
+    Title = 'Show All Plots & Owners',
+    Desc = 'Cetak daftar semua plot dan pemiliknya ke console F9',
+    Callback = function()
+        local plots = Workspace:FindFirstChild("_Plots")
+        if not plots then
+            if Library and Library.Notify then
+                Library:Notify({ Title = "Plots Error", Description = "Folder _Plots tidak ditemukan!", Time = 3 })
+            end
+            return
+        end
+        
+        local logLines = { "=== DAFTAR PLOT & PEMILIK ===" }
+        for _, plot in ipairs(plots:GetChildren()) do
+            local ownerId = plot:GetAttribute("OwnerUserId")
+            local ownerName = plot:GetAttribute("OwnerName") or "Unknown"
+            table.insert(logLines, string.format("Plot: %s | OwnerName: %s | OwnerUserId: %s", 
+                plot.Name, tostring(ownerName), tostring(ownerId)))
+        end
+        
+        local finalLog = table.concat(logLines, "\n")
+        print(finalLog)
+        
+        local setClipboardFunc = setclipboard or toclipboard or writeclipboard or (Clipboard and Clipboard.set)
+        if setClipboardFunc then
+            pcall(function() setClipboardFunc(finalLog) end)
+            if Library and Library.Notify then
+                Library:Notify({ Title = "Plots Listed!", Description = "Daftar plot berhasil disalin ke clipboard.", Time = 4 })
+            end
+        else
+            if Library and Library.Notify then
+                Library:Notify({ Title = "Plots Listed!", Description = "Daftar plot dicetak ke console F9.", Time = 4 })
+            end
+        end
+    end
+})
+
 CollectTab:Section({ Title = "Truck Utilities" })
 
 local function isGUID(str)
@@ -957,12 +995,13 @@ task.spawn(function()
         end
     end)
     
-    -- 3. Resolusi Remote untuk Plot (PlaceStockItem)
+    -- 3. Resolusi Remote untuk Plot (PlaceStockItem & GetShopStock)
     task.spawn(function()
         local PlotEvents = Events:WaitForChild('Plot')
         if PlotEvents then
             PlaceStockItem = PlotEvents:WaitForChild('PlaceStockItem')
-            print("[Storage Hunters] Remote PlaceStockItem berhasil dideteksi!")
+            GetShopStock = PlotEvents:FindFirstChild('GetShopStock') or PlotEvents:WaitForChild('GetShopStock')
+            print("[Storage Hunters] Remote Plot events (PlaceStockItem & GetShopStock) berhasil dideteksi!")
         end
     end)
     
@@ -1069,6 +1108,31 @@ startAutoPlaceLoop = function()
                 continue
             end
             
+            print("[Auto Place] Menggunakan Plot: " .. plot.Name)
+            
+            -- Ambil data stock aktif dari plot (untuk mendeteksi snap point yang sudah terisi)
+            local occupiedPoints = {}
+            if GetShopStock then
+                local success, stock = pcall(function()
+                    return GetShopStock:InvokeServer(plot)
+                end)
+                if success and type(stock) == "table" then
+                    for _, itemGroup in ipairs(stock) do
+                        if type(itemGroup) == "table" then
+                            for _, placedItem in ipairs(itemGroup) do
+                                if type(placedItem) == "table" and placedItem.Attrs then
+                                    local sGUID = placedItem.Attrs.ShelfGUID or placedItem.Attrs.shelfGUID
+                                    local sName = placedItem.Attrs.SnapPointName or placedItem.Attrs.snapPointName
+                                    if sGUID and sName then
+                                        occupiedPoints[sGUID .. "_" .. sName] = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            
             -- Ambil data inventory (dari remote atau fallback lokal)
             local success, inventory
             if GetPlayerInventory then
@@ -1099,33 +1163,46 @@ startAutoPlaceLoop = function()
                 end
             end
             
-            -- Scan plot untuk mencari snap point meja/rak yang kosong (ShelfAddItemPrompt)
+            -- Scan plot untuk mencari snap point meja/rak yang kosong
             local emptySnapPoints = {}
             if plot then
+                local foundPrompts = 0
                 for _, desc in ipairs(plot:GetDescendants()) do
-                    if desc:IsA("ProximityPrompt") and (desc.Name:lower():find("ShelfAddItemPrompt") or desc.ActionText:lower():find("Add item")) and desc.Enabled then
-                        local snapPoint = desc.Parent
-                        if snapPoint and (snapPoint:IsA("BasePart") or snapPoint:IsA("Attachment")) then
-                            local current = snapPoint
-                            local shelfGUID = nil
-                            while current and current ~= plot do
-                                shelfGUID = current:GetAttribute("GUID")
-                                if shelfGUID then break end
-                                current = current.Parent
-                            end
-                            if shelfGUID then
-                                local worldCFrame = snapPoint:IsA("Attachment") and snapPoint.WorldCFrame or snapPoint.CFrame
-                                table.insert(emptySnapPoints, {
-                                    prompt = desc,
-                                    snapPoint = snapPoint,
-                                    worldCFrame = worldCFrame,
-                                    shelfGUID = shelfGUID,
-                                    name = snapPoint.Name
-                                })
+                    if desc:IsA("ProximityPrompt") then
+                        local promptName = desc.Name:lower()
+                        local actionText = desc.ActionText:lower()
+                        
+                        -- Pengecekan case-insensitive yang benar
+                        if promptName:find("additem") or actionText:find("add item") then
+                            foundPrompts = foundPrompts + 1
+                            local snapPoint = desc.Parent
+                            if snapPoint and (snapPoint:IsA("BasePart") or snapPoint:IsA("Attachment")) then
+                                local current = snapPoint
+                                local shelfGUID = nil
+                                while current and current ~= plot do
+                                    shelfGUID = current:GetAttribute("GUID")
+                                    if shelfGUID then break end
+                                    current = current.Parent
+                                end
+                                
+                                if shelfGUID then
+                                    local key = shelfGUID .. "_" .. snapPoint.Name
+                                    if not occupiedPoints[key] then
+                                        local worldCFrame = snapPoint:IsA("Attachment") and snapPoint.WorldCFrame or snapPoint.CFrame
+                                        table.insert(emptySnapPoints, {
+                                            prompt = desc,
+                                            snapPoint = snapPoint,
+                                            worldCFrame = worldCFrame,
+                                            shelfGUID = shelfGUID,
+                                            name = snapPoint.Name
+                                        })
+                                    end
+                                end
                             end
                         end
                     end
                 end
+                print(string.format("[Auto Place] Scan selesai: Menemukan %d prompt AddItem. Tersaring %d snap point kosong.", foundPrompts, #emptySnapPoints))
             end
             
             -- Mulai meletakkan barang ke snap point kosong
