@@ -353,6 +353,185 @@ CollectTab:Toggle({
     end,
 })
 
+CollectTab:Button({
+    Title = 'Copy Diagnostics Info',
+    Desc = 'Jalankan diagnostik Auto-Place dan salin hasilnya ke clipboard',
+    Callback = function()
+        local logLines = {}
+        local function logPrint(str)
+            print(str)
+            table.insert(logLines, str)
+        end
+        
+        logPrint("=== STORAGE HUNTERS DIAGNOSTICS START ===")
+        logPrint("Player Name: " .. LocalPlayer.Name)
+        logPrint("Player UserId: " .. tostring(LocalPlayer.UserId))
+        
+        -- 1. DIAGNOSE PLOTS
+        logPrint("\n--- 1. Plots Diagnostic ---")
+        local plots = Workspace:FindFirstChild("_Plots")
+        if plots then
+            logPrint("Found '_Plots' folder in Workspace.")
+            for _, plot in ipairs(plots:GetChildren()) do
+                local ownerAttr = plot:GetAttribute("OwnerUserId")
+                logPrint(string.format("  Plot: %s | OwnerUserId Attribute: %s (Type: %s)", 
+                    plot.Name, tostring(ownerAttr), typeof(ownerAttr)))
+                
+                local attrs = plot:GetAttributes()
+                for k, v in pairs(attrs) do
+                    logPrint(string.format("    Attribute -> %s: %s (%s)", k, tostring(v), typeof(v)))
+                end
+                
+                for _, child in ipairs(plot:GetChildren()) do
+                    if child.Name:lower():find("owner") then
+                        local valSuccess, val = pcall(function() return child.Value end)
+                        logPrint(string.format("    Found Owner object: %s (Class: %s, Value: %s)", 
+                            child.Name, child.ClassName, tostring(valSuccess and val or "N/A")))
+                    end
+                end
+            end
+        else
+            logPrint("WARNING: '_Plots' folder NOT found in Workspace!")
+            for _, obj in ipairs(Workspace:GetChildren()) do
+                local ownerAttr = obj:GetAttribute("OwnerUserId")
+                if ownerAttr then
+                    logPrint(string.format("  Found object with OwnerUserId: %s | Value: %s", obj.Name, tostring(ownerAttr)))
+                end
+            end
+        end
+        
+        -- 2. DIAGNOSE REMOTES
+        logPrint("\n--- 2. Remotes Diagnostic ---")
+        local events = ReplicatedStorage:FindFirstChild("Events")
+        if events then
+            logPrint("Found 'Events' folder in ReplicatedStorage.")
+            
+            local inventoryFolder = events:FindFirstChild("Inventory")
+            if inventoryFolder then
+                local getPlayerInv = inventoryFolder:FindFirstChild("GetPlayerInventory")
+                if getPlayerInv then
+                    logPrint(string.format("Found GetPlayerInventory Remote! ClassName: %s", getPlayerInv.ClassName))
+                else
+                    logPrint("ERROR: GetPlayerInventory remote NOT found in Events.Inventory!")
+                end
+            else
+                logPrint("ERROR: Inventory folder NOT found in Events!")
+            end
+            
+            local plotFolder = events:FindFirstChild("Plot")
+            if plotFolder then
+                local placeStock = plotFolder:FindFirstChild("PlaceStockItem")
+                if placeStock then
+                    logPrint(string.format("Found PlaceStockItem Remote! ClassName: %s", placeStock.ClassName))
+                else
+                    logPrint("ERROR: PlaceStockItem remote NOT found in Events.Plot!")
+                end
+            else
+                logPrint("ERROR: Plot folder NOT found in Events!")
+            end
+        else
+            logPrint("ERROR: 'Events' folder NOT found in ReplicatedStorage!")
+        end
+        
+        -- 3. DIAGNOSE INVENTORY DATA
+        logPrint("\n--- 3. Inventory Diagnostic ---")
+        local inventory = nil
+        local getPlayerInv = events and events:FindFirstChild("Inventory") and events.Inventory:FindFirstChild("GetPlayerInventory")
+        
+        if getPlayerInv then
+            if getPlayerInv:IsA("RemoteFunction") then
+                local success, result = pcall(function()
+                    return getPlayerInv:InvokeServer()
+                end)
+                
+                logPrint("GetPlayerInventory:InvokeServer() call status: " .. tostring(success))
+                if success then
+                    logPrint("Returned data type: " .. typeof(result))
+                    if typeof(result) == "table" then
+                        inventory = result
+                        local jsonSuccess, jsonStr = pcall(function()
+                            return game:GetService("HttpService"):JSONEncode(result)
+                        end)
+                        if jsonSuccess then
+                            logPrint("Inventory JSON: " .. jsonStr)
+                        else
+                            logPrint("Failed to encode inventory to JSON: " .. tostring(jsonStr))
+                        end
+                    else
+                        logPrint("Returned result is not a table!")
+                    end
+                else
+                    logPrint("ERROR: Remote call failed: " .. tostring(result))
+                end
+            else
+                logPrint("WARNING: GetPlayerInventory is not a RemoteFunction, it is a: " .. getPlayerInv.ClassName)
+            end
+        end
+        
+        if not inventory then
+            logPrint("Attempting to read local folders for inventory...")
+            local localInv = getLocalInventory()
+            if localInv then
+                logPrint("Found items locally.")
+                inventory = localInv
+            else
+                logPrint("No inventory items found locally.")
+            end
+        end
+        
+        if inventory and typeof(inventory) == "table" then
+            logPrint("\nListing inventory items:")
+            for k, v in pairs(inventory) do
+                logPrint(string.format("  Key: %s (%s)", tostring(k), typeof(k)))
+                if typeof(v) == "table" then
+                    for prop, val in pairs(v) do
+                        logPrint(string.format("    %s = %s (%s)", tostring(prop), tostring(val), typeof(val)))
+                    end
+                else
+                    logPrint(string.format("    Value: %s (%s)", tostring(v), typeof(v)))
+                end
+            end
+        else
+            logPrint("No inventory available to inspect.")
+        end
+        
+        logPrint("\n=== STORAGE HUNTERS DIAGNOSTICS END ===")
+        
+        local finalLog = table.concat(logLines, "\n")
+        local setClipboardFunc = setclipboard or toclipboard or writeclipboard or (Clipboard and Clipboard.set)
+        if setClipboardFunc then
+            local success, err = pcall(function()
+                setClipboardFunc(finalLog)
+            end)
+            if success then
+                if Library and Library.Notify then
+                    Library:Notify({
+                        Title = "Diagnostics Copied!",
+                        Description = "Hasil diagnostik berhasil disalin ke clipboard Anda.",
+                        Time = 5
+                    })
+                end
+            else
+                if Library and Library.Notify then
+                    Library:Notify({
+                        Title = "Clipboard Error",
+                        Description = "Gagal menyalin: " .. tostring(err),
+                        Time = 5
+                    })
+                end
+            end
+        else
+            if Library and Library.Notify then
+                Library:Notify({
+                    Title = "Executor Unsupported",
+                    Description = "Executor Anda tidak mendukung fungsi clipboard.",
+                    Time = 5
+                })
+            end
+        end
+    end,
+})
+
 CollectTab:Section({ Title = "Truck Utilities" })
 
 local function isGUID(str)
@@ -934,11 +1113,30 @@ startAutoPlaceLoop = function()
                 for itemId, itemData in pairs(inventory) do
                     if not AutoPlaceEnabled then break end
                     
-                    local idToSend
-                    if type(itemData) == "table" then
-                        idToSend = itemData.UID or itemData.uid or itemData.UUID or itemData.uuid or itemData.Id or itemData.id or itemData.ItemId or itemData.itemId or itemId
-                    else
-                        idToSend = itemData
+                    local idToSend = nil
+                    
+                    -- 1. Cek apakah key (itemId) adalah GUID
+                    if isGUID(itemId) then
+                        idToSend = itemId
+                    end
+                    
+                    -- 2. Cek apakah ada field di dalam itemData yang merupakan GUID
+                    if not idToSend and type(itemData) == "table" then
+                        for _, val in pairs(itemData) do
+                            if isGUID(val) then
+                                idToSend = val
+                                break
+                            end
+                        end
+                    end
+                    
+                    -- 3. Fallback biasa jika tidak ada GUID
+                    if not idToSend then
+                        if type(itemData) == "table" then
+                            idToSend = itemData.UID or itemData.uid or itemData.UUID or itemData.uuid or itemData.Id or itemData.id or itemData.ItemId or itemData.itemId or itemId
+                        else
+                            idToSend = itemData
+                        end
                     end
                     
                     if idToSend then
